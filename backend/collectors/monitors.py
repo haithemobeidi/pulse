@@ -114,7 +114,7 @@ class MonitorCollector(BaseCollector):
             return False
 
     def _parse_connection_type(self, pnp_id: str) -> str:
-        """
+        r"""
         Determine monitor connection type from PnP device ID.
 
         PnP IDs follow patterns like:
