@@ -116,6 +116,7 @@ def get_gpu_info() -> List[Dict[str, Any]]:
 
     try:
         result = run_powershell_json(command)
+        logger.info(f"GPU info result: {result}")
         # Ensure result is a list
         if isinstance(result, dict):
             return [result]
@@ -140,6 +141,7 @@ def get_monitor_info() -> List[Dict[str, Any]]:
 
     try:
         result = run_powershell_json(command)
+        logger.info(f"Monitor info result: {result}")
         # Ensure result is a list
         if isinstance(result, dict):
             return [result]
@@ -208,6 +210,7 @@ def get_cpu_info() -> Dict[str, Any]:
 
     try:
         result = run_powershell_json(command)
+        logger.info(f"CPU info result: {result}")
         # Take first CPU if multiple
         if isinstance(result, list):
             return result[0] if result else {}
@@ -231,7 +234,9 @@ def get_memory_info() -> Dict[str, Any]:
     """
 
     try:
-        return run_powershell_json(command) or {}
+        result = run_powershell_json(command)
+        logger.info(f"Memory info result: {result}")
+        return result or {}
     except PowerShellError as e:
         logger.error(f"Failed to get memory info: {e}")
         return {}

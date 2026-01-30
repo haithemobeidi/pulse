@@ -1,21 +1,24 @@
 """
 Hardware Collector
 
-Collects GPU, CPU, and RAM information using PowerShell queries.
-Critical for tracking GPU driver versions and monitoring changes.
+Collects GPU, CPU, and RAM information using psutil and WMI.
+Much simpler and more reliable than PowerShell approach.
 """
 
 import json
 from typing import Optional
 from backend.collectors.base import BaseCollector
 from backend.database import GPUState, HardwareState
-from backend.utils.powershell import (
-    get_gpu_info,
-    get_cpu_info,
-    get_memory_info,
-    get_gpu_temperature,
-    get_display_driver_version
-)
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
+try:
+    import wmi
+except ImportError:
+    wmi = None
 
 
 class HardwareCollector(BaseCollector):
@@ -52,91 +55,131 @@ class HardwareCollector(BaseCollector):
 
     def _collect_gpu(self, snapshot_id: int) -> bool:
         """
-        Collect GPU information.
+        Collect GPU information using WMI.
 
-        Critical for user's monitor blackout debugging:
-        - Tracks GPU driver version changes
-        - Monitors temperature (correlates with stability)
-        - Records VRAM usage
+        Returns:
+            True if GPU data was collected successfully
         """
-        try:
-            gpu_list = get_gpu_info()
+        self.log_info(f"Starting GPU collection for snapshot {snapshot_id}")
 
-            if not gpu_list:
-                self.log_warning("No GPU devices found")
+        if not wmi:
+            self.log_warning("WMI not available, skipping GPU collection")
+            return False
+
+        try:
+            self.log_info("Connecting to WMI...")
+            c = wmi.WMI()
+            self.log_info("Querying Win32_VideoController...")
+            video_controllers = c.Win32_VideoController()
+            self.log_info(f"Found {len(list(video_controllers))} video controller(s)")
+
+            if not video_controllers:
+                self.log_warning("No video controllers found via WMI")
                 return False
 
-            # Process first GPU (usually the primary discrete GPU)
-            gpu = gpu_list[0] if isinstance(gpu_list, list) else gpu_list
+            # Prefer discrete GPU (NVIDIA/AMD) over integrated graphics (Intel/AMD APU)
+            # Priority: NVIDIA > AMD discrete > Intel/AMD integrated
+            preferred_gpu = None
+            backup_gpu = None
 
-            gpu_name = gpu.get("Name", "Unknown GPU")
-            driver_version = gpu.get("DriverVersion")
+            for vc in video_controllers:
+                gpu_name = vc.Name or "Unknown GPU"
+                driver_version = vc.DriverVersion
+                adapter_ram = vc.AdapterRAM
 
-            # Try to get more detailed driver info if available
-            if not driver_version:
-                driver_version = self._get_driver_version_fallback()
+                self.log_info(f"Processing GPU: {gpu_name} (Driver: {driver_version}, RAM: {adapter_ram})")
 
-            # Get temperature if available
-            temp = self._safe_execute(get_gpu_temperature)
+                # Check if this is a discrete GPU
+                is_nvidia = "nvidia" in gpu_name.lower()
+                is_amd_discrete = "amd" in gpu_name.lower() and "radeon" in gpu_name.lower() and "graphics" not in gpu_name.lower()
+                is_integrated = "intel" in gpu_name.lower() or ("amd" in gpu_name.lower() and "graphics" in gpu_name.lower())
 
-            # Get VRAM info (AdapterRAM in bytes)
-            vram_total = gpu.get("AdapterRAM")
-            if vram_total:
-                # Convert bytes to MB
-                vram_total_mb = int(vram_total) // (1024 * 1024)
+                self.log_info(f"  is_nvidia={is_nvidia}, is_amd_discrete={is_amd_discrete}, is_integrated={is_integrated}")
+
+                gpu_info = {
+                    'name': gpu_name,
+                    'driver': driver_version,
+                    'vram': adapter_ram,
+                    'is_discrete': is_nvidia or is_amd_discrete
+                }
+
+                # Prioritize NVIDIA
+                if is_nvidia and not preferred_gpu:
+                    self.log_info(f"  Setting as preferred GPU (NVIDIA)")
+                    preferred_gpu = gpu_info
+                # Then AMD discrete
+                elif is_amd_discrete and not preferred_gpu:
+                    self.log_info(f"  Setting as preferred GPU (AMD discrete)")
+                    preferred_gpu = gpu_info
+                # Save integrated as backup
+                elif is_integrated and not backup_gpu:
+                    self.log_info(f"  Setting as backup GPU (integrated)")
+                    backup_gpu = gpu_info
+                # Take any GPU if nothing preferred yet
+                elif not preferred_gpu and not backup_gpu:
+                    self.log_info(f"  Setting as backup GPU (fallback)")
+                    backup_gpu = gpu_info
+
+            # Use preferred GPU, fallback to backup
+            gpu_to_record = preferred_gpu or backup_gpu
+            self.log_info(f"Selected GPU: {gpu_to_record}")
+
+            if not gpu_to_record:
+                self.log_warning("No suitable GPU found")
+                return False
+
+            # Convert VRAM from bytes to MB (handle negative/invalid values)
+            vram_bytes = gpu_to_record['vram']
+            self.log_info(f"VRAM bytes: {vram_bytes}")
+
+            if vram_bytes and vram_bytes > 0:
+                vram_mb = int(vram_bytes) // (1024 * 1024)
             else:
-                vram_total_mb = None
+                vram_mb = None
 
-            # Create GPU state record
+            self.log_info(f"Creating GPU state: name={gpu_to_record['name']}, driver={gpu_to_record['driver']}, vram_mb={vram_mb}")
+
             gpu_state = GPUState(
                 snapshot_id=snapshot_id,
-                gpu_name=gpu_name,
-                driver_version=driver_version,
-                vram_total_mb=vram_total_mb,
-                vram_used_mb=None,  # Requires additional query
-                temperature_c=temp,
-                power_draw_w=None,  # Requires specialized tools
+                gpu_name=gpu_to_record['name'],
+                driver_version=gpu_to_record['driver'],
+                vram_total_mb=vram_mb,
+                vram_used_mb=None,  # WMI doesn't provide current usage
+                temperature_c=None,  # Requires specialized tools
+                power_draw_w=None,
                 clock_speed_mhz=None
             )
 
+            self.log_info(f"Saving GPU state to database...")
             self.db.create_gpu_state(gpu_state)
-            self.log_info(f"Recorded GPU: {gpu_name} (Driver: {driver_version})")
+            self.log_info(f"✅ Recorded GPU: {gpu_to_record['name']} (Driver: {gpu_to_record['driver']}, VRAM: {vram_mb}MB)")
             return True
 
         except Exception as e:
-            self.log_error(f"Failed to collect GPU data: {e}")
+            self.log_error(f"❌ Failed to collect GPU data: {e}")
+            import traceback
+            self.log_error(f"Traceback: {traceback.format_exc()}")
             return False
 
-    def _get_driver_version_fallback(self) -> Optional[str]:
-        """
-        Fallback method to get driver version from registry.
-
-        Used if WMI doesn't provide driver version.
-        """
-        try:
-            version = get_display_driver_version()
-            if version:
-                self.log_info(f"Got driver version from registry: {version}")
-            return version
-        except Exception as e:
-            self.log_warning(f"Could not get driver version: {e}")
-            return None
-
     def _collect_cpu(self, snapshot_id: int) -> bool:
-        """Collect CPU information"""
+        """Collect CPU information using psutil"""
+        if not psutil:
+            self.log_warning("psutil not installed, skipping CPU collection")
+            return False
+
         try:
-            cpu_info = get_cpu_info()
+            # Get CPU info
+            cpu_count = psutil.cpu_count(logical=False)  # Physical cores
+            cpu_count_logical = psutil.cpu_count(logical=True)  # Logical processors
+            cpu_freq = psutil.cpu_freq()
+            cpu_percent = psutil.cpu_percent(interval=1)
 
-            if not cpu_info:
-                self.log_warning("No CPU info available")
-                return False
-
-            # Store as JSON in hardware_state table
             component_data = json.dumps({
-                "name": cpu_info.get("Name"),
-                "cores": cpu_info.get("NumberOfCores"),
-                "logical_processors": cpu_info.get("NumberOfLogicalProcessors"),
-                "max_clock_speed_mhz": cpu_info.get("MaxClockSpeed")
+                "physical_cores": cpu_count,
+                "logical_processors": cpu_count_logical,
+                "frequency_mhz": int(cpu_freq.current) if cpu_freq else None,
+                "max_frequency_mhz": int(cpu_freq.max) if cpu_freq else None,
+                "usage_percent": cpu_percent
             })
 
             hardware = HardwareState(
@@ -146,7 +189,7 @@ class HardwareCollector(BaseCollector):
             )
 
             self.db.create_hardware_state(hardware)
-            self.log_info(f"Recorded CPU: {cpu_info.get('Name')}")
+            self.log_info(f"Recorded CPU: {cpu_count} cores @ {cpu_freq.current if cpu_freq else 'N/A'}MHz")
             return True
 
         except Exception as e:
@@ -154,23 +197,20 @@ class HardwareCollector(BaseCollector):
             return False
 
     def _collect_memory(self, snapshot_id: int) -> bool:
-        """Collect memory information"""
+        """Collect memory information using psutil"""
+        if not psutil:
+            self.log_warning("psutil not installed, skipping memory collection")
+            return False
+
         try:
-            mem_info = get_memory_info()
-
-            if not mem_info:
-                self.log_warning("No memory info available")
-                return False
-
-            # Convert KB to GB
-            total_kb = mem_info.get("TotalVisibleMemorySize", 0)
-            free_kb = mem_info.get("FreePhysicalMemory", 0)
+            mem = psutil.virtual_memory()
 
             component_data = json.dumps({
-                "total_gb": round(total_kb / 1024 / 1024, 2),
-                "free_gb": round(free_kb / 1024 / 1024, 2),
-                "used_gb": round((total_kb - free_kb) / 1024 / 1024, 2),
-                "percent_free": round(100 * free_kb / total_kb, 1) if total_kb > 0 else 0
+                "total_gb": round(mem.total / (1024**3), 2),
+                "available_gb": round(mem.available / (1024**3), 2),
+                "used_gb": round(mem.used / (1024**3), 2),
+                "percent_used": mem.percent,
+                "percent_available": 100 - mem.percent
             })
 
             hardware = HardwareState(
@@ -180,7 +220,7 @@ class HardwareCollector(BaseCollector):
             )
 
             self.db.create_hardware_state(hardware)
-            self.log_info(f"Recorded Memory: {component_data}")
+            self.log_info(f"Recorded Memory: {mem.total / (1024**3):.1f}GB total, {mem.percent}% used")
             return True
 
         except Exception as e:
