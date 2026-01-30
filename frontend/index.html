@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PC-Inspector - System Monitoring & Debugging</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <h1>PC-Inspector</h1>
+            <p class="subtitle">Local System Monitoring & Debugging</p>
+        </header>
+
+        <nav class="nav-tabs">
+            <button class="nav-btn active" data-page="dashboard">Dashboard</button>
+            <button class="nav-btn" data-page="issues">Issues</button>
+            <button class="nav-btn" data-page="timeline">Timeline</button>
+            <button class="nav-btn" data-page="hardware">Hardware</button>
+        </nav>
+
+        <!-- Dashboard Page -->
+        <section id="dashboard" class="page active">
+            <h2>System Status</h2>
+
+            <div class="status-grid">
+                <div class="card">
+                    <h3>GPU Status</h3>
+                    <div id="gpu-status" class="status-content">
+                        <p class="loading">Loading GPU information...</p>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>Monitors</h3>
+                    <div id="monitors-status" class="status-content">
+                        <p class="loading">Loading monitor information...</p>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>Memory</h3>
+                    <div id="memory-status" class="status-content">
+                        <p class="loading">Loading memory information...</p>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>CPU</h3>
+                    <div id="cpu-status" class="status-content">
+                        <p class="loading">Loading CPU information...</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="action-area">
+                <button id="log-issue-btn" class="btn btn-primary">Log Issue</button>
+                <button id="collect-btn" class="btn btn-secondary">Collect Data</button>
+            </div>
+
+            <div id="recent-issues" class="card">
+                <h3>Recent Issues</h3>
+                <div id="recent-issues-list" class="issues-list">
+                    <p class="loading">Loading issues...</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Issues Page -->
+        <section id="issues" class="page">
+            <h2>All Issues</h2>
+            <div id="all-issues-list" class="issues-list">
+                <p class="loading">Loading issues...</p>
+            </div>
+        </section>
+
+        <!-- Timeline Page -->
+        <section id="timeline" class="page">
+            <h2>System Timeline</h2>
+            <div id="timeline-view" class="timeline">
+                <p class="loading">Loading timeline...</p>
+            </div>
+        </section>
+
+        <!-- Hardware Page -->
+        <section id="hardware" class="page">
+            <h2>Hardware History</h2>
+
+            <div class="hardware-section">
+                <h3>GPU History</h3>
+                <div id="gpu-history" class="history-list">
+                    <p class="loading">Loading GPU history...</p>
+                </div>
+            </div>
+
+            <div class="hardware-section">
+                <h3>Monitor History</h3>
+                <div id="monitor-history" class="history-list">
+                    <p class="loading">Loading monitor history...</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Issue Logging Modal -->
+        <div id="issue-modal" class="modal hidden">
+            <div class="modal-content">
+                <button class="modal-close">&times;</button>
+                <h2>Log Issue</h2>
+
+                <form id="issue-form">
+                    <div class="form-group">
+                        <label for="issue-type">Issue Type:</label>
+                        <select id="issue-type" required>
+                            <option value="monitor_blackout">Monitor Blackout</option>
+                            <option value="crash">System Crash</option>
+                            <option value="performance">Performance Issue</option>
+                            <option value="driver_issue">Driver Issue</option>
+                            <option value="power">Power Event</option>
+                            <option value="other">Other</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="issue-severity">Severity:</label>
+                        <select id="issue-severity" required>
+                            <option value="low">Low</option>
+                            <option value="medium" selected>Medium</option>
+                            <option value="high">High</option>
+                            <option value="critical">Critical</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="issue-description">Description:</label>
+                        <textarea id="issue-description" rows="4" placeholder="Describe what happened..." required></textarea>
+                    </div>
+
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary">Log Issue</button>
+                        <button type="button" class="btn btn-secondary modal-close-btn">Cancel</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Notification Toast -->
+        <div id="notification" class="notification hidden"></div>
+    </div>
+
+    <script src="src/main.ts" type="module"></script>
+</body>
+</html>

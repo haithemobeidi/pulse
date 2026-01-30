@@ -1,0 +1,37 @@
+# Database
+data/system.db
+data/*.db
+data/*.sqlite
+
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+env/
+*.egg-info/
+.pytest_cache/
+
+# Frontend
+node_modules/
+dist/
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
