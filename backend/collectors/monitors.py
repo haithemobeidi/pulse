@@ -75,32 +75,99 @@ class MonitorCollector(BaseCollector):
 
     def _get_monitors_from_wmi(self) -> list:
         """
-        Query monitors using WMI with multiple fallback methods.
+        Query monitors using multiple methods: PowerShell first (best), then WMI fallbacks.
 
         Returns:
             List of monitor dictionaries with connection and status info
         """
         monitors = []
 
-        # Method 1: Try PnP devices (most reliable for detection)
+        # Method 1: Try PowerShell Get-PnpDevice (most reliable for actual monitor names)
+        try:
+            import subprocess
+            import json
+
+            self.log_info("Attempting to get monitors via PowerShell Get-PnpDevice...")
+
+            ps_command = (
+                "Get-PnpDevice -Class Monitor | "
+                "Select-Object @{Name='FriendlyName';Expression={$_.FriendlyName}}, "
+                "@{Name='InstanceId';Expression={$_.InstanceId}}, "
+                "@{Name='Status';Expression={$_.Status}} | "
+                "ConvertTo-Json"
+            )
+
+            result = subprocess.run(
+                ["powershell.exe", "-Command", ps_command],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode == 0 and result.stdout.strip():
+                try:
+                    devices = json.loads(result.stdout)
+                    # Handle single device (returns dict) vs multiple (returns list)
+                    if not isinstance(devices, list):
+                        devices = [devices]
+
+                    for device in devices:
+                        friendly_name = device.get("FriendlyName", "Unknown Monitor")
+                        instance_id = device.get("InstanceId", "")
+                        status = device.get("Status", "Unknown")
+
+                        # Parse connection type from instance ID
+                        connection_type = self._parse_connection_type_from_instance_id(instance_id)
+
+                        self.log_info(f"Found monitor via PowerShell: {friendly_name} ({connection_type}) - {status}")
+
+                        monitors.append({
+                            "FriendlyName": friendly_name,
+                            "Status": "connected" if status == "OK" else "disconnected",
+                            "ConnectionType": connection_type,
+                            "DeviceID": instance_id
+                        })
+
+                    if monitors:
+                        self.log_info(f"Found {len(monitors)} monitors via PowerShell")
+                        return monitors
+                except json.JSONDecodeError as e:
+                    self.log_warning(f"Failed to parse PowerShell JSON output: {e}")
+        except Exception as e:
+            self.log_info(f"PowerShell monitor query failed (will try WMI): {e}")
+
+        # Method 2: Try PnP devices via WMI (fallback if PowerShell fails)
         try:
             c = wmi.WMI()
             pnp_monitors = c.Win32_PnPEntity(
                 where="Name LIKE '%Monitor%' OR Description LIKE '%Monitor%'"
             )
             for pnp in pnp_monitors:
-                if pnp.Status == "OK":  # Only connected monitors
-                    monitors.append({
-                        "FriendlyName": pnp.Name or "Unknown Monitor",
-                        "Status": "connected",
-                        "ConnectionType": self._parse_connection_type(pnp.Name or ""),
-                        "DeviceID": pnp.DeviceID
-                    })
+                try:
+                    if pnp.Status == "OK":  # Only connected monitors
+                        friendly_name = pnp.Name or "Unknown Monitor"
+                        device_id = pnp.DeviceID
+
+                        # Try to get better name from registry
+                        registry_name = self._get_monitor_name_from_registry(device_id)
+                        if registry_name:
+                            friendly_name = registry_name
+                            self.log_info(f"Found monitor name from registry: {friendly_name}")
+
+                        monitors.append({
+                            "FriendlyName": friendly_name,
+                            "Status": "connected",
+                            "ConnectionType": self._parse_connection_type(friendly_name or ""),
+                            "DeviceID": device_id
+                        })
+                except Exception as e:
+                    self.log_warning(f"Error processing PnP monitor: {e}")
+
             if monitors:
                 self.log_info(f"Found {len(monitors)} monitors via PnP devices")
                 return monitors
         except Exception as e:
-            self.log_warning(f"PnP monitor query failed: {e}")
+            self.log_warning(f"PnP monitor query failed (will try alternative method): {e}")
 
         # Method 2: Try desktop monitors via WMI
         try:
@@ -242,6 +309,100 @@ class MonitorCollector(BaseCollector):
             self.log_error(f"Failed to record monitor: {e}")
             return False
 
+    def _get_monitor_name_from_registry(self, device_id: str) -> str:
+        """
+        Try to get monitor friendly name from Windows registry.
+
+        Registry path: HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Enum\\DISPLAY
+
+        Args:
+            device_id: Device ID from WMI (e.g., "DISPLAY\\LGD02FF\\4&123456&0&UID256")
+
+        Returns:
+            Monitor name if found, empty string if not
+        """
+        self.log_info(f"Looking up monitor name for device_id: {device_id}")
+
+        try:
+            import winreg
+
+            # Extract the device identifier from the full device ID
+            # Format: DISPLAY\MANUFACTURER\4&HEX&0&UIDXXXX
+            parts = device_id.split("\\")
+            self.log_info(f"Device ID parts: {parts}")
+
+            if len(parts) < 3:
+                self.log_warning(f"Invalid device_id format: {device_id}")
+                return ""
+
+            manufacturer = parts[1]
+            device_num = parts[2]
+
+            self.log_info(f"Looking for manufacturer={manufacturer}, device_num={device_num}")
+
+            reg = winreg.ConnectRegistry(None, winreg.HKEY_LOCAL_MACHINE)
+
+            try:
+                # Try to find the device in registry
+                display_key = r"SYSTEM\CurrentControlSet\Enum\DISPLAY"
+                key = winreg.OpenKey(reg, display_key)
+
+                # Enumerate through DISPLAY devices
+                subkey_count = winreg.QueryInfoKey(key)[0]
+                self.log_info(f"Found {subkey_count} DISPLAY subkeys")
+
+                for i in range(subkey_count):
+                    subkey_name = winreg.EnumKey(key, i)
+                    self.log_info(f"  Checking DISPLAY subkey: {subkey_name}")
+
+                    # Look for our manufacturer
+                    if manufacturer.upper() in subkey_name.upper():
+                        self.log_info(f"  ✓ Manufacturer match found: {subkey_name}")
+                        subkey = winreg.OpenKey(key, subkey_name)
+
+                        try:
+                            # Enumerate instances under this manufacturer
+                            instance_count = winreg.QueryInfoKey(subkey)[0]
+                            self.log_info(f"    Found {instance_count} instances under {subkey_name}")
+
+                            for j in range(instance_count):
+                                instance_name = winreg.EnumKey(subkey, j)
+                                self.log_info(f"      Checking instance: {instance_name}")
+
+                                # Check if this matches our device
+                                if device_num.upper() in instance_name.upper():
+                                    self.log_info(f"      ✓ Device match found: {instance_name}")
+                                    instance_key = winreg.OpenKey(subkey, instance_name)
+
+                                    try:
+                                        friendly_name = winreg.QueryValueEx(
+                                            instance_key, "FriendlyName"
+                                        )[0]
+                                        if friendly_name:
+                                            self.log_info(f"      ✓ Got friendly name: {friendly_name}")
+                                            return friendly_name
+                                    except OSError as e:
+                                        self.log_info(f"      No FriendlyName field: {e}")
+                                    finally:
+                                        winreg.CloseKey(instance_key)
+
+                        finally:
+                            winreg.CloseKey(subkey)
+
+                winreg.CloseKey(key)
+
+            except OSError as e:
+                self.log_warning(f"Could not access registry display key: {e}")
+
+            reg.CloseKey()
+
+        except Exception as e:
+            self.log_error(f"Registry monitor name lookup failed: {e}")
+            import traceback
+            self.log_error(f"Traceback: {traceback.format_exc()}")
+
+        return ""
+
     def _parse_connection_type(self, name: str) -> str:
         """
         Determine monitor connection type from device name.
@@ -264,6 +425,37 @@ class MonitorCollector(BaseCollector):
 
         # Default guess for modern systems
         if "nvidia" in name_lower or "amd" in name_lower or "intel" in name_lower:
+            return "DisplayPort"
+
+        return "Unknown"
+
+    def _parse_connection_type_from_instance_id(self, instance_id: str) -> str:
+        """
+        Determine monitor connection type from PnP device instance ID.
+
+        Instance IDs contain port information. Examples:
+        - DISPLAY\\LGD06FF\\4&123456&0&UID256 (Built-in display)
+        - DISPLAY\\AW3425DW\\4&789ABC&0&UID257 (External monitor)
+
+        Args:
+            instance_id: PnP device instance ID
+
+        Returns:
+            Connection type (DisplayPort, HDMI, DVI, VGA, etc.)
+        """
+        if not instance_id:
+            return "Unknown"
+
+        instance_lower = instance_id.lower()
+
+        # Check for explicit connection type indicators in the instance ID
+        for keyword, conn_type in self.CONNECTION_TYPE_MAP.items():
+            if keyword in instance_lower:
+                return conn_type
+
+        # Most modern monitors use DisplayPort or HDMI
+        # If no specific indicator found, default to DisplayPort for external monitors
+        if "uid" in instance_lower:  # External displays usually have UID
             return "DisplayPort"
 
         return "Unknown"

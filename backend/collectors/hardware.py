@@ -20,6 +20,29 @@ try:
 except ImportError:
     wmi = None
 
+try:
+    import winreg
+except ImportError:
+    winreg = None
+
+try:
+    from pynvml import *
+    nvml_available = True
+except ImportError:
+    nvml_available = False
+
+# Known GPU VRAM amounts (fallback when WMI returns invalid)
+KNOWN_GPU_VRAM_GB = {
+    "nvidia geforce rtx 5090": 32,
+    "nvidia geforce rtx 6000": 24,
+    "nvidia geforce rtx 4090": 24,
+    "nvidia geforce rtx 4080": 16,
+    "nvidia geforce rtx 4070": 12,
+    "amd radeon rx 7900 xtx": 24,
+    "amd radeon rx 7900 xt": 20,
+    "intel arc a770": 16,
+}
+
 
 class HardwareCollector(BaseCollector):
     """Collects GPU, CPU, memory, and hardware information"""
@@ -84,8 +107,20 @@ class HardwareCollector(BaseCollector):
 
             for vc in video_controllers:
                 gpu_name = vc.Name or "Unknown GPU"
-                driver_version = vc.DriverVersion
                 adapter_ram = vc.AdapterRAM
+
+                # Get driver version
+                driver_version = vc.DriverVersion
+
+                # For NVIDIA, try to get the real user-facing driver version from registry
+                # (WMI gives 32.0.X.X format, we want 579.XX format)
+                if "nvidia" in gpu_name.lower():
+                    nvidia_version = self._get_nvidia_driver_version()
+                    if nvidia_version:
+                        self.log_info(f"Got NVIDIA user-facing driver version from registry: {nvidia_version}")
+                        driver_version = nvidia_version
+                    else:
+                        self.log_warning(f"Could not find NVIDIA user-facing driver version, using WMI version: {driver_version}")
 
                 self.log_info(f"Processing GPU: {gpu_name} (Driver: {driver_version}, RAM: {adapter_ram})")
 
@@ -130,23 +165,67 @@ class HardwareCollector(BaseCollector):
 
             # Convert VRAM from bytes to MB (handle negative/invalid values)
             vram_bytes = gpu_to_record['vram']
-            self.log_info(f"VRAM bytes: {vram_bytes}")
+            self.log_info(f"VRAM bytes from WMI: {vram_bytes}")
 
+            vram_mb = None
+
+            # Try to get VRAM from bytes first
             if vram_bytes and vram_bytes > 0:
                 vram_mb = int(vram_bytes) // (1024 * 1024)
+                self.log_info(f"Got VRAM from WMI: {vram_mb}MB")
             else:
-                vram_mb = None
+                # Try known GPU database
+                gpu_name_lower = gpu_to_record['name'].lower()
+                for known_gpu, known_vram_gb in KNOWN_GPU_VRAM_GB.items():
+                    if known_gpu in gpu_name_lower:
+                        vram_mb = known_vram_gb * 1024
+                        self.log_info(f"Got VRAM from known database: {vram_mb}MB ({known_vram_gb}GB)")
+                        break
 
-            self.log_info(f"Creating GPU state: name={gpu_to_record['name']}, driver={gpu_to_record['driver']}, vram_mb={vram_mb}")
+            # If still no VRAM, try registry
+            if not vram_mb:
+                vram_mb = self._get_gpu_vram_from_registry(gpu_to_record['name'])
+                if vram_mb:
+                    self.log_info(f"Got VRAM from registry: {vram_mb}MB")
+
+            # Try to get GPU metrics using NVIDIA Management Library (pynvml)
+            vram_used_mb = None
+            temperature_c = None
+            gpu_load = None
+
+            if nvml_available and "nvidia" in gpu_to_record['name'].lower():
+                try:
+                    nvmlInit()
+                    device_count = nvmlDeviceGetCount()
+                    self.log_info(f"NVIDIA devices found: {device_count}")
+
+                    if device_count > 0:
+                        handle = nvmlDeviceGetHandleByIndex(0)
+                        mem_info = nvmlDeviceGetMemoryInfo(handle)
+                        vram_used_mb = mem_info.used // (1024 * 1024)
+
+                        try:
+                            temperature_c = nvmlDeviceGetTemperature(handle, 0)
+                        except Exception as e:
+                            self.log_warning(f"Could not get GPU temperature: {e}")
+
+                        self.log_info(f"GPU Memory: {vram_used_mb}MB used")
+                        self.log_info(f"GPU Temperature: {temperature_c}°C")
+
+                    nvmlShutdown()
+                except Exception as e:
+                    self.log_warning(f"pynvml failed: {e}")
+
+            self.log_info(f"Creating GPU state: name={gpu_to_record['name']}, driver={gpu_to_record['driver']}, vram_total={vram_mb}MB, vram_used={vram_used_mb}MB, temp={temperature_c}°C")
 
             gpu_state = GPUState(
                 snapshot_id=snapshot_id,
                 gpu_name=gpu_to_record['name'],
                 driver_version=gpu_to_record['driver'],
                 vram_total_mb=vram_mb,
-                vram_used_mb=None,  # WMI doesn't provide current usage
-                temperature_c=None,  # Requires specialized tools
-                power_draw_w=None,
+                vram_used_mb=vram_used_mb,
+                temperature_c=temperature_c,
+                power_draw_w=None,  # pynvml doesn't provide power easily
                 clock_speed_mhz=None
             )
 
@@ -160,6 +239,200 @@ class HardwareCollector(BaseCollector):
             import traceback
             self.log_error(f"Traceback: {traceback.format_exc()}")
             return False
+
+    def _get_nvidia_driver_version(self) -> str:
+        """
+        Get NVIDIA user-facing driver version (e.g., "591.86").
+
+        Tries nvidia-smi first (most reliable), then falls back to registry.
+
+        Returns:
+            Driver version string (e.g., "591.86") or None
+        """
+        # Method 1: Try nvidia-smi command (most reliable for user-facing version)
+        try:
+            import subprocess
+            self.log_info("Attempting to get NVIDIA driver version from nvidia-smi...")
+
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode == 0:
+                version = result.stdout.strip()
+                if version:
+                    self.log_info(f"Got NVIDIA driver version from nvidia-smi: {version}")
+                    return version
+        except FileNotFoundError:
+            self.log_info("nvidia-smi not found, falling back to registry...")
+        except Exception as e:
+            self.log_warning(f"nvidia-smi failed: {e}, falling back to registry...")
+
+        # Method 2: Fall back to registry lookup
+        self.log_info("Looking up NVIDIA driver version from registry...")
+
+        try:
+            import winreg
+
+            # Registry paths that might contain NVIDIA driver version
+            registry_paths = [
+                # NVIDIA Control Panel current driver
+                (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Services\nvlddmkm"),
+                # NVIDIA ForceWare registry
+                (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\NVIDIA Corporation\Global\GFXDevice"),
+                # NVIDIA driver version via installer
+                (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\NVIDIA Corporation\NvCleanInstall"),
+                # Direct display adapter path
+                (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Class\{4D36E968-E325-11CE-BFC1-08002BE10318}"),
+            ]
+
+            for hkey, path in registry_paths:
+                try:
+                    self.log_info(f"Checking registry path: {path}")
+                    reg = winreg.ConnectRegistry(None, hkey)
+                    key = winreg.OpenKey(reg, path)
+
+                    # Try multiple value names that might contain version
+                    value_names = ["DriverVersion", "Version", "ImageVersion", "InstalledVersion"]
+
+                    for value_name in value_names:
+                        try:
+                            value, value_type = winreg.QueryValueEx(key, value_name)
+                            self.log_info(f"  Found {value_name}: {value}")
+
+                            # Check if this looks like a driver version (e.g., 579.01 or 32.0.15.9174)
+                            if value and isinstance(value, str):
+                                # If it's the long form (32.0.15.9174), try to extract the driver number
+                                parts = value.split('.')
+                                if len(parts) >= 2:
+                                    # Try to get the major version number (usually first 2-3 parts)
+                                    if parts[0].isdigit() and int(parts[0]) < 100:
+                                        # Short form like 579.01 or 32.0
+                                        return value
+                                    elif parts[0].isdigit() and int(parts[0]) > 100:
+                                        # Likely a full version number
+                                        return value
+
+                        except OSError:
+                            pass
+
+                    winreg.CloseKey(key)
+                    reg.CloseKey()
+
+                except Exception as e:
+                    self.log_info(f"  Path not found or error: {e}")
+
+            # If we got here, try one more thing - look for version in all subkeys under the device class
+            self.log_info("Attempting detailed search in device class registry...")
+            try:
+                reg = winreg.ConnectRegistry(None, winreg.HKEY_LOCAL_MACHINE)
+                class_key = r"SYSTEM\CurrentControlSet\Control\Class\{4D36E968-E325-11CE-BFC1-08002BE10318}"
+                key = winreg.OpenKey(reg, class_key)
+
+                # Enumerate all subkeys
+                for i in range(winreg.QueryInfoKey(key)[0]):
+                    subkey_name = winreg.EnumKey(key, i)
+                    self.log_info(f"  Checking subkey: {subkey_name}")
+
+                    subkey = winreg.OpenKey(key, subkey_name)
+                    try:
+                        # Get description to identify NVIDIA GPU
+                        try:
+                            desc = winreg.QueryValueEx(subkey, "DriverDesc")[0]
+                            if "nvidia" in desc.lower():
+                                self.log_info(f"    Found NVIDIA GPU: {desc}")
+
+                                # Try to get version
+                                try:
+                                    version = winreg.QueryValueEx(subkey, "DriverVersion")[0]
+                                    self.log_info(f"    DriverVersion value: {version}")
+                                    if version:
+                                        return version
+                                except OSError:
+                                    pass
+
+                        except OSError:
+                            pass
+                    finally:
+                        winreg.CloseKey(subkey)
+
+                winreg.CloseKey(key)
+                reg.CloseKey()
+
+            except Exception as e:
+                self.log_error(f"Detailed registry search failed: {e}")
+
+        except Exception as e:
+            self.log_error(f"NVIDIA driver version lookup failed: {e}")
+            import traceback
+            self.log_error(traceback.format_exc())
+
+        return None
+
+    def _get_gpu_vram_from_registry(self, gpu_name: str) -> int:
+        """
+        Try to get GPU VRAM from Windows registry.
+
+        Registry path: HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4D36E968-E325-11CE-BFC1-08002BE10318}
+
+        Args:
+            gpu_name: GPU name to look up
+
+        Returns:
+            VRAM in MB or None if not found
+        """
+        if not winreg:
+            return None
+
+        try:
+            import winreg
+            reg = winreg.ConnectRegistry(None, winreg.HKEY_LOCAL_MACHINE)
+
+            # This is the GUID for display adapters
+            display_class_key = r"SYSTEM\CurrentControlSet\Control\Class\{4D36E968-E325-11CE-BFC1-08002BE10318}"
+
+            try:
+                key = winreg.OpenKey(reg, display_class_key)
+
+                # Enumerate subkeys (usually 0000, 0001, etc.)
+                for i in range(winreg.QueryInfoKey(key)[0]):
+                    subkey_name = winreg.EnumKey(key, i)
+                    subkey = winreg.OpenKey(key, subkey_name)
+
+                    try:
+                        # Get the device description
+                        desc = winreg.QueryValueEx(subkey, "DriverDesc")[0]
+
+                        # If this matches our GPU, try to get memory
+                        if gpu_name.lower() in desc.lower():
+                            # Try different registry value names for VRAM
+                            for vram_key in ["HardwareInformation.qxDriverMemory", "HardwareInformation.MemorySize"]:
+                                try:
+                                    vram_bytes = winreg.QueryValueEx(subkey, vram_key)[0]
+                                    if isinstance(vram_bytes, int) and vram_bytes > 0:
+                                        vram_mb = vram_bytes // (1024 * 1024)
+                                        self.log_info(f"Found {gpu_name} in registry: {vram_mb}MB")
+                                        return vram_mb
+                                except OSError:
+                                    pass
+
+                    finally:
+                        winreg.CloseKey(subkey)
+
+                winreg.CloseKey(key)
+
+            except OSError as e:
+                self.log_warning(f"Could not access registry display key: {e}")
+
+            reg.CloseKey()
+
+        except Exception as e:
+            self.log_warning(f"Registry VRAM lookup failed: {e}")
+
+        return None
 
     def _collect_cpu(self, snapshot_id: int) -> bool:
         """Collect CPU information using psutil"""
