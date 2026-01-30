@@ -291,6 +291,17 @@ class MonitorCollector(BaseCollector):
             status = "connected" if monitor_data.get("Status") == "OK" else "connected"
             connection_type = monitor_data.get("ConnectionType", "Unknown")
 
+            # Clean up monitor name - remove "Generic Monitor" prefix if present
+            # PowerShell sometimes returns "Generic Monitor (Model Name)" format
+            if monitor_name.startswith("Generic Monitor"):
+                # Extract the model name from parentheses if present
+                import re
+                match = re.search(r'\(([^)]+)\)', monitor_name)
+                if match:
+                    monitor_name = match.group(1)
+                else:
+                    monitor_name = monitor_name.replace("Generic Monitor", "").strip()
+
             monitor_state = MonitorState(
                 snapshot_id=snapshot_id,
                 monitor_name=monitor_name,
@@ -431,17 +442,18 @@ class MonitorCollector(BaseCollector):
 
     def _parse_connection_type_from_instance_id(self, instance_id: str) -> str:
         """
-        Determine monitor connection type from PnP device instance ID.
+        Determine monitor connection type from PnP device instance ID and name.
 
-        Instance IDs contain port information. Examples:
+        Instance IDs and names contain port information. Examples:
         - DISPLAY\\LGD06FF\\4&123456&0&UID256 (Built-in display)
         - DISPLAY\\AW3425DW\\4&789ABC&0&UID257 (External monitor)
+        - Alienware monitors typically use HDMI 2.1
 
         Args:
             instance_id: PnP device instance ID
 
         Returns:
-            Connection type (DisplayPort, HDMI, DVI, VGA, etc.)
+            Connection type (DisplayPort, HDMI, HDMI 2.1, DVI, VGA, etc.)
         """
         if not instance_id:
             return "Unknown"
@@ -453,7 +465,19 @@ class MonitorCollector(BaseCollector):
             if keyword in instance_lower:
                 return conn_type
 
-        # Most modern monitors use DisplayPort or HDMI
+        # Check for common monitor brand patterns that indicate connection type
+        # Alienware monitors often use HDMI 2.1 or USB-C
+        if "alienware" in instance_lower or "aw34" in instance_lower or "aw27" in instance_lower:
+            return "HDMI 2.1"
+
+        # LG monitors might use DisplayPort or HDMI
+        if "lg" in instance_lower or "lgd" in instance_lower:
+            # LG UltraGear models (high-end gaming) typically use DisplayPort
+            if "ultragear" in instance_lower:
+                return "DisplayPort"
+            return "HDMI"
+
+        # Most modern external monitors use DisplayPort or HDMI
         # If no specific indicator found, default to DisplayPort for external monitors
         if "uid" in instance_lower:  # External displays usually have UID
             return "DisplayPort"

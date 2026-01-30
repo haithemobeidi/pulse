@@ -15,11 +15,19 @@ from backend.database import db, Snapshot, SnapshotType, Issue, IssueType, Issue
 from backend.collectors.hardware import HardwareCollector
 from backend.collectors.monitors import MonitorCollector
 
-# Enable logging to console
+# Enable logging to console for ALL modules
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+
+# Make sure backend loggers are set to INFO
+backend_logger = logging.getLogger('backend')
+backend_logger.setLevel(logging.INFO)
+
+# Also get collector logger
+collector_logger = logging.getLogger('backend.collectors')
+collector_logger.setLevel(logging.INFO)
 
 # Calculate absolute path to frontend directory
 PROJECT_ROOT = Path(__file__).parent.parent

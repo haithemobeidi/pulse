@@ -28,8 +28,9 @@ async function loadHardwareStatus() {
       ? `
         <div class="hw-item">
           <p><strong>Model:</strong> ${escapeHtml(hardware.gpu.gpu_name || 'Unknown')}</p>
+          <p><strong>Driver:</strong> ${escapeHtml(hardware.gpu.driver_version || 'Unknown')}</p>
           <p><strong>VRAM:</strong> ${hardware.gpu.vram_total_mb ? (hardware.gpu.vram_total_mb / 1024).toFixed(1) : 'Unknown'} GB</p>
-          ${hardware.gpu.vram_used_mb ? `<p><strong>VRAM Used:</strong> ${(hardware.gpu.vram_used_mb / 1024).toFixed(1)} GB</p>` : ''}
+          ${hardware.gpu.vram_used_mb ? `<p><strong>VRAM Used:</strong> ${(hardware.gpu.vram_used_mb / 1024).toFixed(1)} GB (${((hardware.gpu.vram_used_mb / hardware.gpu.vram_total_mb * 100) || 0).toFixed(1)}%)</p>` : ''}
           ${hardware.gpu.temperature_c ? `<p><strong>Temp:</strong> ${hardware.gpu.temperature_c}°C</p>` : ''}
         </div>
       `
@@ -68,9 +69,10 @@ async function loadHardwareStatus() {
     const cpuHtml = cpuData
       ? `
         <div class="hw-item">
-          <p><strong>Cores:</strong> ${cpuData.physical_cores || 'Unknown'}</p>
+          <p><strong>Cores:</strong> ${cpuData.physical_cores || 'Unknown'} cores / ${cpuData.logical_processors || 'Unknown'} threads</p>
           <p><strong>Usage:</strong> ${cpuData.usage_percent || 'Unknown'}%</p>
-          <p><strong>Frequency:</strong> ${cpuData.frequency_mhz ? (cpuData.frequency_mhz / 1000).toFixed(2) : 'Unknown'} GHz</p>
+          <p><strong>Base Frequency:</strong> ${cpuData.frequency_mhz ? (cpuData.frequency_mhz / 1000).toFixed(2) : 'Unknown'} GHz</p>
+          ${cpuData.max_frequency_mhz ? `<p><strong>Max Frequency:</strong> ${(cpuData.max_frequency_mhz / 1000).toFixed(2)} GHz</p>` : ''}
         </div>
       `
       : '<p>No CPU data available</p>';
