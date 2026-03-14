@@ -136,6 +136,12 @@ function setupTroubleshoot() {
 
   if (!analyzeBtn || !problemInput) return;
 
+  // Reset stale state from previous sessions (browser cache restores DOM)
+  const scanProgress = document.getElementById('scan-progress');
+  const analysisResults = document.getElementById('analysis-results');
+  if (scanProgress) scanProgress.classList.add('hidden');
+  if (analysisResults) analysisResults.classList.add('hidden');
+
   analyzeBtn.addEventListener('click', () => runAnalysis());
   problemInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
