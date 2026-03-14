@@ -5,7 +5,7 @@
  * Handles JSON serialization, error handling, and base URL configuration.
  */
 
-const API_BASE_URL = 'http://localhost:8000';
+const API_BASE_URL = 'http://localhost:5000';
 
 interface RequestOptions extends RequestInit {
   body?: any;

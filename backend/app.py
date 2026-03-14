@@ -14,6 +14,10 @@ from flask import Flask, jsonify, request, send_from_directory
 from backend.database import db, Snapshot, SnapshotType, Issue, IssueType, IssueSeverity, GPUState, MonitorState
 from backend.collectors.hardware import HardwareCollector
 from backend.collectors.monitors import MonitorCollector
+from backend.collectors.reliability import ReliabilityCollector
+from backend.ai.reasoning import analyze_issue as ai_analyze, has_any_provider, get_provider_status
+from backend.ai.learning import LearningEngine
+from backend.database import AiAnalysis, SuggestedFix, FixOutcome
 
 # Enable logging to console for ALL modules
 logging.basicConfig(
@@ -258,6 +262,12 @@ def log_issue():
         except Exception as e:
             print(f"Monitor collection error: {e}")
 
+        try:
+            rel = ReliabilityCollector(db)
+            rel.collect(snapshot_id, days=7)  # Last 7 days for issue context
+        except Exception as e:
+            print(f"Reliability collection error: {e}")
+
         # Log issue
         issue = Issue(
             snapshot_id=snapshot_id,
@@ -294,6 +304,370 @@ def get_issue(issue_id):
             'gpu_state': gpu,
             'monitors': [dict(m) for m in monitors]
         })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
+# AI Analysis Endpoints
+# ============================================================================
+
+@app.route('/api/ai/status')
+def ai_status():
+    """Check which AI providers are available"""
+    return jsonify(get_provider_status())
+
+
+@app.route('/api/ai/analyze', methods=['POST'])
+def analyze():
+    """
+    Analyze a problem using AI.
+
+    Request body:
+        description: str - Description of the problem
+        screenshot_path: str (optional) - Path to screenshot
+    """
+    try:
+        data = request.get_json()
+        description = data.get('description', '')
+
+        if not description:
+            return jsonify({'error': 'Description is required'}), 400
+
+        screenshot_path = data.get('screenshot_path')
+        preferred_provider = data.get('provider', 'auto')  # auto, ollama, gemini, claude
+
+        # First collect fresh data so AI has current system state
+        snapshot = Snapshot(
+            snapshot_type=SnapshotType.ISSUE_LOGGED,
+            notes=f"AI Analysis: {description[:100]}"
+        )
+        snapshot_id = db.create_snapshot(snapshot)
+
+        # Run collectors
+        try:
+            hw = HardwareCollector(db)
+            hw.collect(snapshot_id)
+        except Exception as e:
+            logger.warning(f"Hardware collection error during AI analysis: {e}")
+
+        try:
+            mon = MonitorCollector(db)
+            mon.collect(snapshot_id)
+        except Exception as e:
+            logger.warning(f"Monitor collection error during AI analysis: {e}")
+
+        try:
+            rel = ReliabilityCollector(db)
+            rel.collect(snapshot_id, days=14)
+        except Exception as e:
+            logger.warning(f"Reliability collection error during AI analysis: {e}")
+
+        # Log the issue
+        issue = Issue(
+            snapshot_id=snapshot_id,
+            issue_type=IssueType.OTHER,
+            description=description,
+            severity=IssueSeverity.MEDIUM
+        )
+        issue_id = db.create_issue(issue)
+
+        # Run AI analysis with provider preference
+        analysis = ai_analyze(db, description, screenshot_path, preferred_provider)
+
+        # Store analysis in database
+        ai_record = AiAnalysis(
+            issue_id=issue_id,
+            diagnosis=analysis.get('diagnosis', ''),
+            confidence=analysis.get('confidence', 0),
+            root_cause=analysis.get('root_cause', ''),
+            raw_response=json.dumps(analysis),
+            model_used=analysis.get('model', 'unknown'),
+            tokens_input=analysis.get('tokens_used', {}).get('input', 0),
+            tokens_output=analysis.get('tokens_used', {}).get('output', 0),
+        )
+        analysis_id = db.create_ai_analysis(ai_record)
+
+        # Store each suggested fix with pending status
+        stored_fixes = []
+        for fix_data in analysis.get('suggested_fixes', []):
+            fix = SuggestedFix(
+                analysis_id=analysis_id,
+                issue_id=issue_id,
+                title=fix_data.get('title', ''),
+                description=fix_data.get('description', ''),
+                risk_level=fix_data.get('risk_level', 'medium'),
+                action_type=fix_data.get('action_type', 'manual'),
+                action_detail=fix_data.get('action_detail', ''),
+                estimated_success=fix_data.get('estimated_success', 0.5),
+                reversible=fix_data.get('reversible', True),
+                status='pending',
+            )
+            fix_id = db.create_suggested_fix(fix)
+            fix_data['id'] = fix_id
+            stored_fixes.append(fix_data)
+
+        analysis['suggested_fixes'] = stored_fixes
+        analysis['issue_id'] = issue_id
+        analysis['snapshot_id'] = snapshot_id
+        analysis['analysis_id'] = analysis_id
+
+        return jsonify(analysis)
+
+    except Exception as e:
+        logger.error(f"AI analysis endpoint error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
+# Fix Approval Endpoints
+# ============================================================================
+
+@app.route('/api/fixes/<int:fix_id>/approve', methods=['POST'])
+def approve_fix(fix_id):
+    """
+    Approve a suggested fix for execution.
+    The fix will NOT execute automatically - it just marks it as approved.
+    A separate execute call is needed.
+    """
+    try:
+        fix = db.get_fix(fix_id)
+        if not fix:
+            return jsonify({'error': 'Fix not found'}), 404
+
+        if fix['status'] != 'pending':
+            return jsonify({'error': f'Fix is already {fix["status"]}'}), 400
+
+        db.update_fix_status(fix_id, 'approved')
+        return jsonify({'status': 'approved', 'fix_id': fix_id})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/fixes/<int:fix_id>/reject', methods=['POST'])
+def reject_fix(fix_id):
+    """Reject a suggested fix"""
+    try:
+        fix = db.get_fix(fix_id)
+        if not fix:
+            return jsonify({'error': 'Fix not found'}), 404
+
+        db.update_fix_status(fix_id, 'rejected')
+        return jsonify({'status': 'rejected', 'fix_id': fix_id})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/fixes/<int:fix_id>/execute', methods=['POST'])
+def execute_fix(fix_id):
+    """
+    Execute an approved fix. ONLY works if fix status is 'approved'.
+    For command-type fixes, runs the command and captures output.
+    For manual fixes, just marks as executed.
+    """
+    try:
+        fix = db.get_fix(fix_id)
+        if not fix:
+            return jsonify({'error': 'Fix not found'}), 404
+
+        if fix['status'] != 'approved':
+            return jsonify({
+                'error': f'Fix must be approved before execution. Current status: {fix["status"]}'
+            }), 400
+
+        action_type = fix.get('action_type', '')
+        action_detail = fix.get('action_detail', '')
+        output = ""
+        success = True
+
+        if action_type == 'command':
+            # Execute the command via PowerShell
+            import subprocess
+            try:
+                result = subprocess.run(
+                    ["powershell.exe", "-Command", action_detail],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                output = result.stdout + result.stderr
+                success = result.returncode == 0
+            except subprocess.TimeoutExpired:
+                output = "Command timed out after 60 seconds"
+                success = False
+            except Exception as e:
+                output = f"Execution error: {e}"
+                success = False
+
+        elif action_type == 'service':
+            # Restart a Windows service
+            import subprocess
+            try:
+                result = subprocess.run(
+                    ["powershell.exe", "-Command", f"Restart-Service -Name '{action_detail}' -Force"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                output = result.stdout + result.stderr
+                success = result.returncode == 0
+            except Exception as e:
+                output = f"Service restart error: {e}"
+                success = False
+
+        elif action_type == 'manual':
+            output = "Manual fix - user will follow the instructions"
+            success = True
+
+        else:
+            output = f"Action type '{action_type}' - user should follow instructions"
+            success = True
+
+        db.update_fix_status(fix_id, 'executed', output=output, success=success)
+
+        return jsonify({
+            'status': 'executed',
+            'fix_id': fix_id,
+            'success': success,
+            'output': output
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/fixes/<int:fix_id>/outcome', methods=['POST'])
+def record_fix_outcome(fix_id):
+    """
+    Record whether a fix actually resolved the issue.
+    This is the key learning signal.
+    """
+    try:
+        data = request.get_json()
+        resolved = data.get('resolved', False)
+        notes = data.get('notes', '')
+
+        fix = db.get_fix(fix_id)
+        if not fix:
+            return jsonify({'error': 'Fix not found'}), 404
+
+        learning = LearningEngine(db)
+        outcome_id = learning.record_outcome(
+            fix_id=fix_id,
+            issue_id=fix['issue_id'],
+            resolved=resolved,
+            notes=notes
+        )
+
+        return jsonify({
+            'status': 'recorded',
+            'outcome_id': outcome_id,
+            'resolved': resolved
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/fixes/issue/<int:issue_id>')
+def get_fixes_for_issue(issue_id):
+    """Get all suggested fixes for an issue"""
+    try:
+        fixes = db.get_suggested_fixes(issue_id)
+        return jsonify(fixes)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
+# Learning & Patterns Endpoints
+# ============================================================================
+
+@app.route('/api/patterns')
+def get_patterns():
+    """Get all learned patterns"""
+    try:
+        pattern_type = request.args.get('type')
+        patterns = db.get_active_patterns(pattern_type)
+        return jsonify(patterns)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/recommendations')
+def get_recommendations():
+    """Get preventive recommendations based on learned patterns"""
+    try:
+        learning = LearningEngine(db)
+        recs = learning.get_recommendations()
+        return jsonify(recs)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
+# Reliability Monitor Endpoints
+# ============================================================================
+
+@app.route('/api/reliability/recent')
+def get_recent_reliability():
+    """Get recent reliability records"""
+    try:
+        days = request.args.get('days', 30, type=int)
+        limit = request.args.get('limit', 100, type=int)
+        records = db.get_recent_reliability_records(days=days, limit=limit)
+        return jsonify(records)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/reliability/snapshot/<int:snapshot_id>')
+def get_reliability_for_snapshot(snapshot_id):
+    """Get reliability records for a specific snapshot"""
+    try:
+        records = db.get_reliability_records(snapshot_id)
+        return jsonify(records)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/reliability/summary')
+def get_reliability_summary():
+    """Get a summary of reliability issues by type"""
+    try:
+        days = request.args.get('days', 30, type=int)
+        records = db.get_recent_reliability_records(days=days, limit=500)
+
+        summary = {
+            'total_records': len(records),
+            'by_type': {},
+            'stability_index': None,
+            'recent_crashes': [],
+            'recent_installs': [],
+        }
+
+        for record in records:
+            rtype = record.get('record_type', 'unknown')
+            summary['by_type'][rtype] = summary['by_type'].get(rtype, 0) + 1
+
+            if record.get('stability_index') and summary['stability_index'] is None:
+                summary['stability_index'] = record['stability_index']
+
+            if 'crash' in rtype and len(summary['recent_crashes']) < 10:
+                summary['recent_crashes'].append({
+                    'source': record.get('source_name'),
+                    'message': record.get('event_message', '')[:200],
+                    'time': record.get('event_time'),
+                    'product': record.get('product_name')
+                })
+
+            if 'install' in rtype and len(summary['recent_installs']) < 10:
+                summary['recent_installs'].append({
+                    'source': record.get('source_name'),
+                    'message': record.get('event_message', '')[:200],
+                    'time': record.get('event_time'),
+                    'product': record.get('product_name')
+                })
+
+        return jsonify(summary)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -411,6 +785,16 @@ def collect_all():
                 results['collections']['monitors'] = 'no_data'
         except Exception as e:
             results['collections']['monitors'] = f'error: {str(e)}'
+
+        # Reliability Monitor
+        try:
+            rel = ReliabilityCollector(db)
+            if rel.collect(snapshot_id, days=30):
+                results['collections']['reliability'] = 'ok'
+            else:
+                results['collections']['reliability'] = 'no_data'
+        except Exception as e:
+            results['collections']['reliability'] = f'error: {str(e)}'
 
         return jsonify(results)
     except Exception as e:

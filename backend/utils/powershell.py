@@ -128,21 +128,55 @@ def get_gpu_info() -> List[Dict[str, Any]]:
 
 def get_monitor_info() -> List[Dict[str, Any]]:
     """
-    Get monitor information from PnP devices.
+    Get monitor information using EDID data (WmiMonitorID) for real model names.
+    Falls back to PnP devices if EDID query fails.
 
     Returns:
-        List of monitor dictionaries with: FriendlyName, Status, InstanceId
+        List of monitor dictionaries with: UserFriendlyName, Manufacturer, Status, InstanceName
     """
+    # Primary: WmiMonitorID reads actual EDID data from monitor hardware
     command = """
+    $monitors = Get-CimInstance -Namespace root\\wmi -ClassName WmiMonitorID -ErrorAction SilentlyContinue
+    $pnp = Get-PnpDevice -Class Monitor -ErrorAction SilentlyContinue
+    $results = @()
+    foreach ($m in $monitors) {
+      $name = ($m.UserFriendlyName | Where-Object {$_ -ne 0} | ForEach-Object {[char]$_}) -join ''
+      $mfr = ($m.ManufacturerName | Where-Object {$_ -ne 0} | ForEach-Object {[char]$_}) -join ''
+      $serial = ($m.SerialNumberID | Where-Object {$_ -ne 0} | ForEach-Object {[char]$_}) -join ''
+      $instanceName = $m.InstanceName
+      $pnpMatch = $pnp | Where-Object { $instanceName -like "*$($_.InstanceId)*" } | Select-Object -First 1
+      $status = if ($pnpMatch) { $pnpMatch.Status } else { 'OK' }
+      $results += @{
+        UserFriendlyName = $name
+        Manufacturer = $mfr
+        SerialNumber = $serial
+        InstanceName = $instanceName
+        Status = $status
+      }
+    }
+    $results | ConvertTo-Json -Depth 3 -AsArray
+    """
+
+    try:
+        result = run_powershell_json(command)
+        logger.info(f"Monitor info (EDID) result: {result}")
+        if isinstance(result, dict):
+            return [result]
+        if result:
+            return result
+    except PowerShellError as e:
+        logger.warning(f"EDID monitor query failed, trying PnP fallback: {e}")
+
+    # Fallback: basic PnP devices
+    fallback_command = """
     Get-PnpDevice -Class Monitor |
     Select-Object FriendlyName, Status, InstanceId |
     ConvertTo-Json -AsArray
     """
 
     try:
-        result = run_powershell_json(command)
-        logger.info(f"Monitor info result: {result}")
-        # Ensure result is a list
+        result = run_powershell_json(fallback_command)
+        logger.info(f"Monitor info (PnP fallback) result: {result}")
         if isinstance(result, dict):
             return [result]
         return result or []

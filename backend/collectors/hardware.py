@@ -112,15 +112,21 @@ class HardwareCollector(BaseCollector):
                 # Get driver version
                 driver_version = vc.DriverVersion
 
-                # For NVIDIA, try to get the real user-facing driver version from registry
-                # (WMI gives 32.0.X.X format, we want 579.XX format)
+                # For NVIDIA, get the user-facing driver version (e.g., "591.74")
+                # WMI gives the internal format like "32.0.15.9174"
                 if "nvidia" in gpu_name.lower():
                     nvidia_version = self._get_nvidia_driver_version()
                     if nvidia_version:
-                        self.log_info(f"Got NVIDIA user-facing driver version from registry: {nvidia_version}")
+                        self.log_info(f"Got NVIDIA user-facing driver version: {nvidia_version}")
                         driver_version = nvidia_version
-                    else:
-                        self.log_warning(f"Could not find NVIDIA user-facing driver version, using WMI version: {driver_version}")
+                    elif driver_version and '.' in driver_version:
+                        # Convert WMI format to user-facing: "32.0.15.9174" → "591.74"
+                        converted = self._convert_wmi_driver_version(driver_version)
+                        if converted:
+                            self.log_info(f"Converted WMI version {driver_version} → {converted}")
+                            driver_version = converted
+                        else:
+                            self.log_warning(f"Could not convert NVIDIA driver version, using WMI format: {driver_version}")
 
                 self.log_info(f"Processing GPU: {gpu_name} (Driver: {driver_version}, RAM: {adapter_ram})")
 
@@ -239,6 +245,37 @@ class HardwareCollector(BaseCollector):
             import traceback
             self.log_error(f"Traceback: {traceback.format_exc()}")
             return False
+
+    def _convert_wmi_driver_version(self, wmi_version: str) -> str:
+        """
+        Convert WMI internal driver version to user-facing NVIDIA format.
+
+        WMI format: "32.0.15.9174" → take last two parts "15" and "9174"
+        → combine as "591.74" (last 5 digits of concatenated string, split at 3)
+
+        The conversion: take last 5 digits of the combined last two parts,
+        insert a dot after the 3rd digit.
+        Example: "15" + "9174" = "159174" → last 5 = "59174" → "591.74"
+
+        Args:
+            wmi_version: WMI format version string (e.g., "32.0.15.9174")
+
+        Returns:
+            User-facing version (e.g., "591.74") or None if conversion fails
+        """
+        try:
+            parts = wmi_version.split('.')
+            if len(parts) >= 4:
+                # Take last two parts and concatenate
+                combined = parts[-2] + parts[-1]
+                # Take last 5 digits
+                if len(combined) >= 5:
+                    last5 = combined[-5:]
+                    # Insert dot after 3rd digit: "59174" → "591.74"
+                    return f"{last5[:3]}.{last5[3:]}"
+        except Exception as e:
+            self.log_warning(f"WMI version conversion failed: {e}")
+        return None
 
     def _get_nvidia_driver_version(self) -> str:
         """

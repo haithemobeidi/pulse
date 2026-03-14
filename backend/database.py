@@ -150,6 +150,94 @@ class SystemEvent:
 
 
 @dataclass
+class ReliabilityRecord:
+    """Windows Reliability Monitor record"""
+    id: Optional[int] = None
+    snapshot_id: int = None
+    record_type: str = None  # app_crash, driver_crash, os_crash, app_install, app_uninstall, driver_install, os_update, misc_failure
+    source_name: str = None  # Application or component that generated the event
+    event_message: str = None
+    event_time: Optional[str] = None
+    product_name: Optional[str] = None  # Software/driver involved
+    stability_index: Optional[float] = None  # Windows stability rating 1-10
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+
+@dataclass
+class AiAnalysis:
+    """Stored AI analysis result"""
+    id: Optional[int] = None
+    issue_id: int = None
+    diagnosis: Optional[str] = None
+    confidence: Optional[float] = None
+    root_cause: Optional[str] = None
+    raw_response: Optional[str] = None  # Full JSON response
+    model_used: Optional[str] = None
+    tokens_input: Optional[int] = None
+    tokens_output: Optional[int] = None
+    created_at: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+
+@dataclass
+class SuggestedFix:
+    """Individual fix suggestion from AI"""
+    id: Optional[int] = None
+    analysis_id: int = None
+    issue_id: int = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    risk_level: Optional[str] = None
+    action_type: Optional[str] = None
+    action_detail: Optional[str] = None
+    estimated_success: Optional[float] = None
+    reversible: bool = True
+    status: str = "pending"  # pending, approved, rejected, executed, rolled_back
+    approved_at: Optional[str] = None
+    executed_at: Optional[str] = None
+    execution_output: Optional[str] = None
+    execution_success: Optional[bool] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+
+@dataclass
+class FixOutcome:
+    """User-reported outcome of a fix attempt"""
+    id: Optional[int] = None
+    fix_id: int = None
+    issue_id: int = None
+    resolved: bool = False
+    user_notes: Optional[str] = None
+    rated_at: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+
+@dataclass
+class Pattern:
+    """Learned pattern from fix history"""
+    id: Optional[int] = None
+    pattern_type: Optional[str] = None  # symptom_cluster, hardware_correlation, fix_effectiveness, change_trigger
+    description: Optional[str] = None
+    evidence: Optional[str] = None  # JSON list of issue_ids
+    confidence: float = 0.0
+    times_seen: int = 1
+    last_seen: Optional[str] = None
+    created_at: Optional[str] = None
+    active: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+
+@dataclass
 class ConfigChange:
     """Detected configuration changes"""
     id: Optional[int] = None
@@ -295,6 +383,91 @@ class Database:
         );
         CREATE INDEX IF NOT EXISTS idx_system_events_snapshot ON system_events(snapshot_id);
         CREATE INDEX IF NOT EXISTS idx_system_events_type ON system_events(event_type);
+
+        -- Reliability Monitor: Windows reliability records (crashes, installs, failures)
+        CREATE TABLE IF NOT EXISTS reliability_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_id INTEGER NOT NULL,
+            record_type TEXT NOT NULL,
+            source_name TEXT,
+            event_message TEXT,
+            event_time DATETIME,
+            product_name TEXT,
+            stability_index REAL,
+            FOREIGN KEY (snapshot_id) REFERENCES snapshots(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_reliability_snapshot ON reliability_records(snapshot_id);
+        CREATE INDEX IF NOT EXISTS idx_reliability_type ON reliability_records(record_type);
+        CREATE INDEX IF NOT EXISTS idx_reliability_time ON reliability_records(event_time);
+
+        -- AI Analyses: Stored AI diagnosis results
+        CREATE TABLE IF NOT EXISTS ai_analyses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            issue_id INTEGER NOT NULL,
+            diagnosis TEXT,
+            confidence REAL,
+            root_cause TEXT,
+            raw_response TEXT,
+            model_used TEXT,
+            tokens_input INTEGER,
+            tokens_output INTEGER,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_analyses_issue ON ai_analyses(issue_id);
+
+        -- Suggested Fixes: Individual fix proposals from AI with approval tracking
+        CREATE TABLE IF NOT EXISTS suggested_fixes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            analysis_id INTEGER NOT NULL,
+            issue_id INTEGER NOT NULL,
+            title TEXT,
+            description TEXT,
+            risk_level TEXT,
+            action_type TEXT,
+            action_detail TEXT,
+            estimated_success REAL,
+            reversible INTEGER DEFAULT 1,
+            status TEXT DEFAULT 'pending',
+            approved_at DATETIME,
+            executed_at DATETIME,
+            execution_output TEXT,
+            execution_success INTEGER,
+            FOREIGN KEY (analysis_id) REFERENCES ai_analyses(id) ON DELETE CASCADE,
+            FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_fixes_analysis ON suggested_fixes(analysis_id);
+        CREATE INDEX IF NOT EXISTS idx_fixes_issue ON suggested_fixes(issue_id);
+        CREATE INDEX IF NOT EXISTS idx_fixes_status ON suggested_fixes(status);
+
+        -- Fix Outcomes: User feedback on whether fixes worked
+        CREATE TABLE IF NOT EXISTS fix_outcomes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fix_id INTEGER NOT NULL,
+            issue_id INTEGER NOT NULL,
+            resolved INTEGER DEFAULT 0,
+            user_notes TEXT,
+            rated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (fix_id) REFERENCES suggested_fixes(id) ON DELETE CASCADE,
+            FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_outcomes_fix ON fix_outcomes(fix_id);
+        CREATE INDEX IF NOT EXISTS idx_outcomes_resolved ON fix_outcomes(resolved);
+
+        -- Learned Patterns: Correlations discovered from fix history
+        CREATE TABLE IF NOT EXISTS patterns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pattern_type TEXT NOT NULL,
+            description TEXT NOT NULL,
+            evidence TEXT,
+            confidence REAL DEFAULT 0.0,
+            times_seen INTEGER DEFAULT 1,
+            last_seen DATETIME,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            active INTEGER DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS idx_patterns_type ON patterns(pattern_type);
+        CREATE INDEX IF NOT EXISTS idx_patterns_confidence ON patterns(confidence DESC);
 
         -- Config Changes: Detected changes over time
         CREATE TABLE IF NOT EXISTS config_changes (
@@ -474,6 +647,167 @@ class Database:
         )
         self.commit()
         return cursor.lastrowid
+
+    def create_reliability_record(self, record: ReliabilityRecord) -> int:
+        """Create reliability monitor record"""
+        cursor = self.execute(
+            """
+            INSERT INTO reliability_records
+            (snapshot_id, record_type, source_name, event_message, event_time, product_name, stability_index)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (record.snapshot_id, record.record_type, record.source_name,
+             record.event_message, record.event_time, record.product_name, record.stability_index)
+        )
+        self.commit()
+        return cursor.lastrowid
+
+    def get_reliability_records(self, snapshot_id: int) -> List[Dict[str, Any]]:
+        """Get all reliability records for a snapshot"""
+        cursor = self.execute(
+            "SELECT * FROM reliability_records WHERE snapshot_id = ? ORDER BY event_time DESC",
+            (snapshot_id,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_recent_reliability_records(self, days: int = 30, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get recent reliability records across all snapshots"""
+        cursor = self.execute(
+            """
+            SELECT r.*, s.timestamp as snapshot_time
+            FROM reliability_records r
+            JOIN snapshots s ON r.snapshot_id = s.id
+            WHERE r.event_time >= datetime('now', ?)
+            ORDER BY r.event_time DESC
+            LIMIT ?
+            """,
+            (f'-{days} days', limit)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def create_ai_analysis(self, analysis: AiAnalysis) -> int:
+        """Store an AI analysis result"""
+        cursor = self.execute(
+            """
+            INSERT INTO ai_analyses
+            (issue_id, diagnosis, confidence, root_cause, raw_response, model_used, tokens_input, tokens_output)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (analysis.issue_id, analysis.diagnosis, analysis.confidence, analysis.root_cause,
+             analysis.raw_response, analysis.model_used, analysis.tokens_input, analysis.tokens_output)
+        )
+        self.commit()
+        return cursor.lastrowid
+
+    def get_ai_analyses(self, issue_id: int) -> List[Dict[str, Any]]:
+        """Get all AI analyses for an issue"""
+        cursor = self.execute(
+            "SELECT * FROM ai_analyses WHERE issue_id = ? ORDER BY created_at DESC",
+            (issue_id,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def create_suggested_fix(self, fix: SuggestedFix) -> int:
+        """Store a suggested fix"""
+        cursor = self.execute(
+            """
+            INSERT INTO suggested_fixes
+            (analysis_id, issue_id, title, description, risk_level, action_type,
+             action_detail, estimated_success, reversible, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (fix.analysis_id, fix.issue_id, fix.title, fix.description, fix.risk_level,
+             fix.action_type, fix.action_detail, fix.estimated_success,
+             1 if fix.reversible else 0, fix.status)
+        )
+        self.commit()
+        return cursor.lastrowid
+
+    def get_suggested_fixes(self, issue_id: int) -> List[Dict[str, Any]]:
+        """Get all suggested fixes for an issue"""
+        cursor = self.execute(
+            "SELECT * FROM suggested_fixes WHERE issue_id = ? ORDER BY estimated_success DESC",
+            (issue_id,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def update_fix_status(self, fix_id: int, status: str, output: str = None, success: bool = None):
+        """Update fix status (approve, reject, execute, rollback)"""
+        if status == "approved":
+            self.execute(
+                "UPDATE suggested_fixes SET status = ?, approved_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (status, fix_id)
+            )
+        elif status == "executed":
+            self.execute(
+                """UPDATE suggested_fixes SET status = ?, executed_at = CURRENT_TIMESTAMP,
+                   execution_output = ?, execution_success = ? WHERE id = ?""",
+                (status, output, 1 if success else 0, fix_id)
+            )
+        else:
+            self.execute(
+                "UPDATE suggested_fixes SET status = ? WHERE id = ?",
+                (status, fix_id)
+            )
+        self.commit()
+
+    def get_fix(self, fix_id: int) -> Optional[Dict[str, Any]]:
+        """Get a single fix by ID"""
+        cursor = self.execute("SELECT * FROM suggested_fixes WHERE id = ?", (fix_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def create_fix_outcome(self, outcome: FixOutcome) -> int:
+        """Record user feedback on whether a fix worked"""
+        cursor = self.execute(
+            """
+            INSERT INTO fix_outcomes (fix_id, issue_id, resolved, user_notes)
+            VALUES (?, ?, ?, ?)
+            """,
+            (outcome.fix_id, outcome.issue_id, 1 if outcome.resolved else 0, outcome.user_notes)
+        )
+        self.commit()
+        return cursor.lastrowid
+
+    def get_fix_outcomes(self, issue_id: int = None, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get fix outcomes, optionally filtered by issue"""
+        if issue_id:
+            cursor = self.execute(
+                "SELECT * FROM fix_outcomes WHERE issue_id = ? ORDER BY rated_at DESC LIMIT ?",
+                (issue_id, limit)
+            )
+        else:
+            cursor = self.execute(
+                "SELECT * FROM fix_outcomes ORDER BY rated_at DESC LIMIT ?",
+                (limit,)
+            )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def create_pattern(self, pattern: Pattern) -> int:
+        """Store a learned pattern"""
+        cursor = self.execute(
+            """
+            INSERT INTO patterns (pattern_type, description, evidence, confidence, times_seen, last_seen)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            (pattern.pattern_type, pattern.description, pattern.evidence,
+             pattern.confidence, pattern.times_seen)
+        )
+        self.commit()
+        return cursor.lastrowid
+
+    def get_active_patterns(self, pattern_type: str = None) -> List[Dict[str, Any]]:
+        """Get active learned patterns"""
+        if pattern_type:
+            cursor = self.execute(
+                "SELECT * FROM patterns WHERE active = 1 AND pattern_type = ? ORDER BY confidence DESC",
+                (pattern_type,)
+            )
+        else:
+            cursor = self.execute(
+                "SELECT * FROM patterns WHERE active = 1 ORDER BY confidence DESC"
+            )
+        return [dict(row) for row in cursor.fetchall()]
 
     def create_config_change(self, change: ConfigChange) -> int:
         """Create config change record"""

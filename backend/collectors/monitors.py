@@ -75,19 +75,103 @@ class MonitorCollector(BaseCollector):
 
     def _get_monitors_from_wmi(self) -> list:
         """
-        Query monitors using multiple methods: PowerShell first (best), then WMI fallbacks.
+        Query monitors using multiple methods. Best method first: WmiMonitorID reads
+        actual EDID data from the monitor hardware, giving real model names.
 
         Returns:
             List of monitor dictionaries with connection and status info
         """
         monitors = []
 
-        # Method 1: Try PowerShell Get-PnpDevice (most reliable for actual monitor names)
+        # Method 1: PowerShell WmiMonitorID (reads EDID - gives REAL monitor names)
         try:
             import subprocess
             import json
 
-            self.log_info("Attempting to get monitors via PowerShell Get-PnpDevice...")
+            self.log_info("Attempting to get monitors via WmiMonitorID (EDID data)...")
+
+            # WmiMonitorID reads the monitor's EDID chip - contains actual manufacturer and model
+            # Also get PnP status to check connected/disconnected
+            ps_command = (
+                "$monitors = Get-CimInstance -Namespace root\\wmi -ClassName WmiMonitorID -ErrorAction SilentlyContinue; "
+                "$pnp = Get-PnpDevice -Class Monitor -ErrorAction SilentlyContinue; "
+                "$results = @(); "
+                "foreach ($m in $monitors) { "
+                "  $name = ($m.UserFriendlyName | Where-Object {$_ -ne 0} | ForEach-Object {[char]$_}) -join ''; "
+                "  $mfr = ($m.ManufacturerName | Where-Object {$_ -ne 0} | ForEach-Object {[char]$_}) -join ''; "
+                "  $serial = ($m.SerialNumberID | Where-Object {$_ -ne 0} | ForEach-Object {[char]$_}) -join ''; "
+                "  $prodCode = $m.ProductCodeID; "
+                "  $instanceName = $m.InstanceName; "
+                "  $pnpMatch = $pnp | Where-Object { $instanceName -like \"*$($_.InstanceId)*\" } | Select-Object -First 1; "
+                "  $status = if ($pnpMatch) { $pnpMatch.Status } else { 'OK' }; "
+                "  $results += @{ "
+                "    UserFriendlyName = $name; "
+                "    Manufacturer = $mfr; "
+                "    SerialNumber = $serial; "
+                "    ProductCode = $prodCode; "
+                "    InstanceName = $instanceName; "
+                "    Status = $status "
+                "  } "
+                "}; "
+                "$results | ConvertTo-Json -Depth 3"
+            )
+
+            result = subprocess.run(
+                ["powershell.exe", "-Command", ps_command],
+                capture_output=True,
+                text=True,
+                timeout=15
+            )
+
+            if result.returncode == 0 and result.stdout.strip():
+                try:
+                    devices = json.loads(result.stdout)
+                    if not isinstance(devices, list):
+                        devices = [devices]
+
+                    for device in devices:
+                        edid_name = device.get("UserFriendlyName", "").strip()
+                        manufacturer = device.get("Manufacturer", "").strip()
+                        product_code = device.get("ProductCode", "")
+                        instance_name = device.get("InstanceName", "")
+                        status = device.get("Status", "Unknown")
+
+                        # Build the best possible name from EDID data
+                        if edid_name:
+                            friendly_name = edid_name
+                        elif manufacturer and product_code:
+                            friendly_name = f"{manufacturer} {product_code}"
+                        elif manufacturer:
+                            friendly_name = f"{manufacturer} Monitor"
+                        else:
+                            friendly_name = "Unknown Monitor"
+
+                        # Parse connection type from instance name
+                        connection_type = self._parse_connection_type_from_instance_id(instance_name)
+
+                        self.log_info(f"Found monitor via EDID: {friendly_name} (Mfr: {manufacturer}, Connection: {connection_type}) - {status}")
+
+                        monitors.append({
+                            "FriendlyName": friendly_name,
+                            "Status": "connected" if status == "OK" else "disconnected",
+                            "ConnectionType": connection_type,
+                            "DeviceID": instance_name
+                        })
+
+                    if monitors:
+                        self.log_info(f"Found {len(monitors)} monitors via EDID/WmiMonitorID")
+                        return monitors
+                except json.JSONDecodeError as e:
+                    self.log_warning(f"Failed to parse WmiMonitorID JSON output: {e}")
+        except Exception as e:
+            self.log_info(f"WmiMonitorID query failed (will try PnP fallback): {e}")
+
+        # Method 1b: Fallback to basic PnP if EDID method failed
+        try:
+            import subprocess
+            import json
+
+            self.log_info("Falling back to PowerShell Get-PnpDevice...")
 
             ps_command = (
                 "Get-PnpDevice -Class Monitor | "
@@ -107,7 +191,6 @@ class MonitorCollector(BaseCollector):
             if result.returncode == 0 and result.stdout.strip():
                 try:
                     devices = json.loads(result.stdout)
-                    # Handle single device (returns dict) vs multiple (returns list)
                     if not isinstance(devices, list):
                         devices = [devices]
 
@@ -116,10 +199,9 @@ class MonitorCollector(BaseCollector):
                         instance_id = device.get("InstanceId", "")
                         status = device.get("Status", "Unknown")
 
-                        # Parse connection type from instance ID
                         connection_type = self._parse_connection_type_from_instance_id(instance_id)
 
-                        self.log_info(f"Found monitor via PowerShell: {friendly_name} ({connection_type}) - {status}")
+                        self.log_info(f"Found monitor via PnP: {friendly_name} ({connection_type}) - {status}")
 
                         monitors.append({
                             "FriendlyName": friendly_name,
@@ -129,12 +211,12 @@ class MonitorCollector(BaseCollector):
                         })
 
                     if monitors:
-                        self.log_info(f"Found {len(monitors)} monitors via PowerShell")
+                        self.log_info(f"Found {len(monitors)} monitors via PnP fallback")
                         return monitors
                 except json.JSONDecodeError as e:
-                    self.log_warning(f"Failed to parse PowerShell JSON output: {e}")
+                    self.log_warning(f"Failed to parse PnP JSON output: {e}")
         except Exception as e:
-            self.log_info(f"PowerShell monitor query failed (will try WMI): {e}")
+            self.log_info(f"PowerShell PnP query failed (will try WMI): {e}")
 
         # Method 2: Try PnP devices via WMI (fallback if PowerShell fails)
         try:

@@ -5,3 +5,4 @@ schedule==1.2.0
 wmi==1.5.1
 nvidia-ml-py==12.535.108
 pywin32>=311
+requests>=2.31.0

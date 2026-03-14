@@ -1,5 +1,5 @@
 /**
- * PC-Inspector Frontend - Main Entry Point
+ * Pulse Frontend - Main Entry Point
  */
 
 import * as api from './api/client.js';
@@ -7,6 +7,8 @@ import { initDashboard } from './pages/dashboard.js';
 import { initIssues } from './pages/issues.js';
 import { initTimeline } from './pages/timeline.js';
 import { initHardware } from './pages/hardware.js';
+
+const API_BASE = 'http://localhost:5000';
 
 // Global utilities
 export function showNotification(message, type = 'success') {
@@ -19,7 +21,7 @@ export function showNotification(message, type = 'success') {
 
   setTimeout(() => {
     notification.classList.add('hidden');
-  }, 3000);
+  }, 5000);
 }
 
 export function showLoading(elementId, show = true) {
@@ -44,6 +46,13 @@ export function formatDateShort(dateString) {
 export function formatTimeShort(dateString) {
   const date = new Date(dateString);
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
 }
 
 // Page Navigation
@@ -72,6 +81,9 @@ function setupNavigation() {
 async function loadPageData(pageName) {
   try {
     switch (pageName) {
+      case 'troubleshoot':
+        await loadProviderStatus();
+        break;
       case 'dashboard':
         await initDashboard();
         break;
@@ -88,6 +100,276 @@ async function loadPageData(pageName) {
   } catch (error) {
     console.error(`Failed to load ${pageName}:`, error);
     showNotification(`Failed to load ${pageName}`, 'error');
+  }
+}
+
+// ============================================================================
+// Troubleshoot Page
+// ============================================================================
+
+async function loadProviderStatus() {
+  const badgesEl = document.getElementById('provider-badges');
+  if (!badgesEl) return;
+
+  try {
+    const resp = await fetch(`${API_BASE}/api/ai/status`);
+    const data = await resp.json();
+    const providers = data.providers || {};
+
+    let html = '';
+    for (const [name, info] of Object.entries(providers)) {
+      const dot = info.available ? '&#x25CF;' : '&#x25CB;';
+      const color = info.available ? '#a6e3a1' : '#585b70';
+      const label = name.charAt(0).toUpperCase() + name.slice(1);
+      const extra = name === 'ollama' && info.models?.length
+        ? ` (${info.models[0]})`
+        : '';
+      html += `<span style="color:${color};margin-right:16px;font-size:14px;">${dot} ${label}${extra}</span>`;
+    }
+    badgesEl.innerHTML = html;
+  } catch (e) {
+    badgesEl.innerHTML = '<span style="color:#f38ba8;">Cannot reach backend</span>';
+  }
+}
+
+function setupTroubleshoot() {
+  const analyzeBtn = document.getElementById('analyze-btn');
+  const problemInput = document.getElementById('problem-input');
+
+  if (!analyzeBtn || !problemInput) return;
+
+  analyzeBtn.addEventListener('click', () => runAnalysis());
+  problemInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      runAnalysis();
+    }
+  });
+}
+
+async function runAnalysis() {
+  const problemInput = document.getElementById('problem-input');
+  const analyzeBtn = document.getElementById('analyze-btn');
+  const progressDiv = document.getElementById('scan-progress');
+  const progressFill = document.getElementById('progress-fill');
+  const scanStatus = document.getElementById('scan-status');
+  const resultsDiv = document.getElementById('analysis-results');
+
+  const description = problemInput.value.trim();
+  if (!description) {
+    showNotification('Describe your problem first', 'warning');
+    problemInput.focus();
+    return;
+  }
+
+  const provider = document.getElementById('provider-select').value;
+
+  // Show progress
+  analyzeBtn.disabled = true;
+  analyzeBtn.textContent = 'Analyzing...';
+  progressDiv.classList.remove('hidden');
+  resultsDiv.classList.add('hidden');
+
+  // Animate progress
+  let progress = 0;
+  const steps = [
+    'Collecting hardware data...',
+    'Reading reliability monitor...',
+    'Scanning event logs...',
+    'Sending to AI for analysis...',
+    'Processing diagnosis...',
+  ];
+  const stepInterval = setInterval(() => {
+    progress = Math.min(progress + 15, 90);
+    progressFill.style.width = progress + '%';
+    const stepIdx = Math.min(Math.floor(progress / 20), steps.length - 1);
+    scanStatus.textContent = steps[stepIdx];
+  }, 800);
+
+  try {
+    const resp = await fetch(`${API_BASE}/api/ai/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description, provider }),
+    });
+
+    clearInterval(stepInterval);
+    progressFill.style.width = '100%';
+    scanStatus.textContent = 'Done!';
+
+    const analysis = await resp.json();
+
+    if (analysis.error && !analysis.diagnosis) {
+      showNotification(`Analysis failed: ${analysis.error}`, 'error');
+      return;
+    }
+
+    displayAnalysis(analysis);
+
+  } catch (error) {
+    clearInterval(stepInterval);
+    console.error('Analysis failed:', error);
+    showNotification(`Analysis failed: ${error.message}`, 'error');
+  } finally {
+    analyzeBtn.disabled = false;
+    analyzeBtn.textContent = 'Analyze';
+    setTimeout(() => progressDiv.classList.add('hidden'), 1500);
+  }
+}
+
+function displayAnalysis(analysis) {
+  const resultsDiv = document.getElementById('analysis-results');
+  resultsDiv.classList.remove('hidden');
+
+  // Diagnosis
+  const confidence = analysis.confidence || 0;
+  const confPct = Math.round(confidence * 100);
+  const confColor = confidence > 0.7 ? '#a6e3a1' : confidence > 0.4 ? '#f9e2af' : '#f38ba8';
+  document.getElementById('confidence-badge').innerHTML =
+    `<span style="color:${confColor};font-weight:bold;">${confPct}% confidence</span>`;
+  document.getElementById('diagnosis-text').textContent = analysis.diagnosis || 'No diagnosis available';
+  document.getElementById('root-cause').textContent = analysis.root_cause
+    ? `Root cause: ${analysis.root_cause}`
+    : '';
+  document.getElementById('provider-used').textContent =
+    `Analyzed by ${analysis.provider || 'unknown'} (${analysis.model || ''})`;
+
+  // Fixes
+  const fixesList = document.getElementById('fixes-list');
+  const fixes = analysis.suggested_fixes || [];
+
+  if (fixes.length > 0) {
+    fixesList.innerHTML = '<h3 style="color:#cdd6f4;margin:16px 0 8px;">Suggested Fixes</h3>' +
+      fixes.map((fix, i) => {
+        const riskColors = {
+          none: '#a6e3a1', low: '#a6e3a1', medium: '#f9e2af',
+          high: '#fab387', critical: '#f38ba8'
+        };
+        const riskColor = riskColors[fix.risk_level] || '#a6adc8';
+        const successPct = Math.round((fix.estimated_success || 0) * 100);
+        const fixId = fix.id || '';
+
+        return `
+          <div class="card" style="border-left:3px solid ${riskColor};" data-fix-id="${fixId}">
+            <div style="display:flex;justify-content:space-between;align-items:start;">
+              <h4 style="color:#cdd6f4;margin:0;">${escapeHtml(fix.title)}</h4>
+              <span style="color:${riskColor};font-size:12px;text-transform:uppercase;">${escapeHtml(fix.risk_level)} risk</span>
+            </div>
+            <p style="color:#a6adc8;margin:8px 0;">${escapeHtml(fix.description)}</p>
+            <div style="background:#11111b;padding:10px;border-radius:6px;margin:8px 0;">
+              <code style="color:#89b4fa;font-size:13px;white-space:pre-wrap;">${escapeHtml(fix.action_detail)}</code>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;margin-top:10px;">
+              <span style="color:#585b70;font-size:12px;">Success: ${successPct}% | ${fix.reversible ? 'Reversible' : 'Not reversible'}</span>
+              <div style="flex:1;"></div>
+              ${fixId ? `
+                <button class="btn btn-secondary fix-approve-btn" data-fix-id="${fixId}" style="padding:6px 14px;font-size:13px;">Approve</button>
+                <button class="btn fix-reject-btn" data-fix-id="${fixId}" style="padding:6px 14px;font-size:13px;background:#45475a;color:#cdd6f4;border:none;border-radius:6px;cursor:pointer;">Reject</button>
+              ` : ''}
+            </div>
+            <div class="fix-status" data-fix-id="${fixId}" style="margin-top:8px;"></div>
+          </div>`;
+      }).join('');
+
+    // Attach fix button handlers
+    fixesList.querySelectorAll('.fix-approve-btn').forEach(btn => {
+      btn.addEventListener('click', () => handleFixApprove(btn.dataset.fixId));
+    });
+    fixesList.querySelectorAll('.fix-reject-btn').forEach(btn => {
+      btn.addEventListener('click', () => handleFixReject(btn.dataset.fixId));
+    });
+  } else {
+    fixesList.innerHTML = '';
+  }
+
+  // Questions
+  const questions = analysis.questions || [];
+  const questionsDiv = document.getElementById('ai-questions');
+  if (questions.length > 0) {
+    questionsDiv.classList.remove('hidden');
+    document.getElementById('questions-list').innerHTML =
+      questions.map(q => `<li style="margin:6px 0;">${escapeHtml(q)}</li>`).join('');
+  } else {
+    questionsDiv.classList.add('hidden');
+  }
+
+  // Prevention
+  const preventive = analysis.preventive_tips;
+  const preventiveDiv = document.getElementById('preventive-card');
+  if (preventive) {
+    preventiveDiv.classList.remove('hidden');
+    document.getElementById('preventive-text').textContent = preventive;
+  } else {
+    preventiveDiv.classList.add('hidden');
+  }
+}
+
+async function handleFixApprove(fixId) {
+  const statusDiv = document.querySelector(`.fix-status[data-fix-id="${fixId}"]`);
+
+  try {
+    // Step 1: Approve
+    let resp = await fetch(`${API_BASE}/api/fixes/${fixId}/approve`, { method: 'POST' });
+    let data = await resp.json();
+
+    if (!resp.ok) {
+      statusDiv.innerHTML = `<span style="color:#f38ba8;">Error: ${data.error}</span>`;
+      return;
+    }
+
+    statusDiv.innerHTML = '<span style="color:#f9e2af;">Approved. Execute this fix?</span> ' +
+      `<button class="btn btn-primary fix-execute-btn" style="padding:4px 12px;font-size:12px;margin-left:8px;">Execute</button>`;
+
+    statusDiv.querySelector('.fix-execute-btn').addEventListener('click', async () => {
+      statusDiv.innerHTML = '<span style="color:#a6adc8;">Executing...</span>';
+
+      // Step 2: Execute
+      resp = await fetch(`${API_BASE}/api/fixes/${fixId}/execute`, { method: 'POST' });
+      data = await resp.json();
+
+      if (data.success) {
+        statusDiv.innerHTML = `<span style="color:#a6e3a1;">Executed successfully.</span>` +
+          (data.output ? `<pre style="background:#11111b;padding:8px;border-radius:4px;margin-top:6px;color:#a6adc8;font-size:12px;max-height:100px;overflow:auto;">${escapeHtml(data.output)}</pre>` : '') +
+          `<div style="margin-top:8px;"><span style="color:#a6adc8;">Did this fix the problem?</span> ` +
+          `<button class="btn btn-primary fix-yes-btn" style="padding:4px 12px;font-size:12px;margin:0 4px;">Yes</button>` +
+          `<button class="btn fix-no-btn" style="padding:4px 12px;font-size:12px;background:#45475a;color:#cdd6f4;border:none;border-radius:6px;cursor:pointer;">No</button></div>`;
+
+        // Step 3: Outcome
+        statusDiv.querySelector('.fix-yes-btn').addEventListener('click', () => recordOutcome(fixId, true, statusDiv));
+        statusDiv.querySelector('.fix-no-btn').addEventListener('click', () => recordOutcome(fixId, false, statusDiv));
+      } else {
+        statusDiv.innerHTML = `<span style="color:#f38ba8;">Execution failed.</span>` +
+          (data.output ? `<pre style="background:#11111b;padding:8px;border-radius:4px;margin-top:6px;color:#f38ba8;font-size:12px;">${escapeHtml(data.output)}</pre>` : '');
+      }
+    });
+
+  } catch (error) {
+    statusDiv.innerHTML = `<span style="color:#f38ba8;">Error: ${error.message}</span>`;
+  }
+}
+
+async function handleFixReject(fixId) {
+  const statusDiv = document.querySelector(`.fix-status[data-fix-id="${fixId}"]`);
+  try {
+    await fetch(`${API_BASE}/api/fixes/${fixId}/reject`, { method: 'POST' });
+    statusDiv.innerHTML = '<span style="color:#585b70;">Rejected</span>';
+  } catch (error) {
+    statusDiv.innerHTML = `<span style="color:#f38ba8;">Error: ${error.message}</span>`;
+  }
+}
+
+async function recordOutcome(fixId, resolved, statusDiv) {
+  try {
+    await fetch(`${API_BASE}/api/fixes/${fixId}/outcome`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resolved, notes: '' }),
+    });
+    statusDiv.innerHTML = resolved
+      ? '<span style="color:#a6e3a1;">Marked as resolved. Pulse will remember this fix worked!</span>'
+      : '<span style="color:#f9e2af;">Noted. Pulse will learn from this for next time.</span>';
+  } catch (error) {
+    statusDiv.innerHTML = `<span style="color:#f38ba8;">Error recording outcome: ${error.message}</span>`;
   }
 }
 
@@ -173,14 +455,15 @@ function setupDataCollection() {
 
 // Initialize
 async function init() {
-  console.log('PC-Inspector starting...');
+  console.log('Pulse starting...');
 
   try {
     setupNavigation();
+    setupTroubleshoot();
     setupIssueModal();
     setupDataCollection();
-    await initDashboard();
-    console.log('PC-Inspector ready');
+    await loadProviderStatus();
+    console.log('Pulse ready');
   } catch (error) {
     console.error('Initialization failed:', error);
     showNotification('Failed to initialize application', 'error');
