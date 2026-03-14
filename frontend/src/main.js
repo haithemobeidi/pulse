@@ -168,50 +168,72 @@ async function runAnalysis() {
   progressDiv.classList.remove('hidden');
   resultsDiv.classList.add('hidden');
 
-  // Animate progress
+  // Animate progress with realistic timing
   let progress = 0;
   const steps = [
     'Collecting hardware data...',
-    'Reading reliability monitor...',
-    'Scanning event logs...',
+    'Scanning monitors & reliability...',
     'Sending to AI for analysis...',
+    'Waiting for AI response...',
     'Processing diagnosis...',
   ];
   const stepInterval = setInterval(() => {
-    progress = Math.min(progress + 15, 90);
+    progress = Math.min(progress + 5, 95);
     progressFill.style.width = progress + '%';
     const stepIdx = Math.min(Math.floor(progress / 20), steps.length - 1);
     scanStatus.textContent = steps[stepIdx];
-  }, 800);
+  }, 1500);
+
+  // Timeout: abort after 60 seconds
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60000);
 
   try {
+    console.log('[Pulse] Starting analysis...');
+    const startTime = Date.now();
+
     const resp = await fetch(`${API_BASE}/api/ai/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ description, provider }),
+      signal: controller.signal,
     });
 
+    clearTimeout(timeout);
     clearInterval(stepInterval);
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`[Pulse] Analysis completed in ${elapsed}s`);
+
     progressFill.style.width = '100%';
-    scanStatus.textContent = 'Done!';
+    scanStatus.textContent = `Done! (${elapsed}s)`;
 
     const analysis = await resp.json();
 
     if (analysis.error && !analysis.diagnosis) {
       showNotification(`Analysis failed: ${analysis.error}`, 'error');
+      progressDiv.classList.add('hidden');
       return;
     }
 
     displayAnalysis(analysis);
 
   } catch (error) {
+    clearTimeout(timeout);
     clearInterval(stepInterval);
-    console.error('Analysis failed:', error);
-    showNotification(`Analysis failed: ${error.message}`, 'error');
+    progressDiv.classList.add('hidden');
+
+    if (error.name === 'AbortError') {
+      console.error('[Pulse] Analysis timed out after 60s');
+      showNotification('Analysis timed out. Try again or use a different AI provider.', 'error');
+    } else {
+      console.error('[Pulse] Analysis failed:', error);
+      showNotification(`Analysis failed: ${error.message}`, 'error');
+    }
   } finally {
     analyzeBtn.disabled = false;
     analyzeBtn.textContent = 'Analyze';
-    setTimeout(() => progressDiv.classList.add('hidden'), 1500);
+    setTimeout(() => progressDiv.classList.add('hidden'), 2000);
   }
 }
 

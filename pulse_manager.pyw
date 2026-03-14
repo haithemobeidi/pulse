@@ -229,6 +229,8 @@ class PulseManager:
             self.log_message("Server is already running.", "warning")
             return
 
+        self._intentional_stop = False
+
         if not os.path.exists(VENV_PYTHON):
             self.log_message("ERROR: Virtual environment not found!", "error")
             self.log_message("Run: python -m venv venv", "error")
@@ -291,7 +293,7 @@ class PulseManager:
 
             except Exception as e:
                 # Don't log if we were intentionally stopped
-                if self.server_process is not None:
+                if not self._intentional_stop:
                     self.log_message(f"Server error: {e}", "error")
                 self.running = False
                 self.root.after(0, self.update_status_display)
@@ -301,6 +303,7 @@ class PulseManager:
         thread.start()
 
     def stop_server(self):
+        self._intentional_stop = True
         if self.server_process:
             self.log_message("Stopping server...", "warning")
             try:
