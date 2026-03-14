@@ -28,6 +28,12 @@ logging.basicConfig(
 # Make sure backend loggers are set to INFO
 backend_logger = logging.getLogger('backend')
 backend_logger.setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(_handler)
 
 # Also get collector logger
 collector_logger = logging.getLogger('backend.collectors')

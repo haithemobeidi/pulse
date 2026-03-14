@@ -24,8 +24,13 @@
         <section id="troubleshoot" class="page active">
             <h2>What's wrong with your PC?</h2>
 
-            <div class="card" id="ai-provider-status">
-                <div id="provider-badges" class="provider-badges"></div>
+            <div class="card" id="system-scan-status">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <div>
+                        <span id="scan-indicator" style="color:var(--text-secondary);">Checking system status...</span>
+                    </div>
+                    <div id="provider-badges" class="provider-badges"></div>
+                </div>
             </div>
 
             <div class="card">
@@ -44,8 +49,8 @@
                 </div>
             </div>
 
-            <!-- Scanning Progress -->
-            <div id="scan-progress" class="card hidden">
+            <!-- Scanning Progress (shown only when Analyze is clicked) -->
+            <div id="scan-progress" class="card" style="display:none;">
                 <h3>Scanning your system...</h3>
                 <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
                 <p id="scan-status" style="color:#a6adc8;margin-top:8px;">Collecting hardware data...</p>

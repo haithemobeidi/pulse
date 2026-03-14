@@ -139,8 +139,8 @@ function setupTroubleshoot() {
   // Reset stale state from previous sessions (browser cache restores DOM)
   const scanProgress = document.getElementById('scan-progress');
   const analysisResults = document.getElementById('analysis-results');
-  if (scanProgress) scanProgress.classList.add('hidden');
-  if (analysisResults) analysisResults.classList.add('hidden');
+  if (scanProgress) scanProgress.style.display = 'none';
+  if (analysisResults) analysisResults.style.display = 'none';
 
   analyzeBtn.addEventListener('click', () => runAnalysis());
   problemInput.addEventListener('keydown', (e) => {
@@ -149,6 +149,37 @@ function setupTroubleshoot() {
       runAnalysis();
     }
   });
+
+  // Check system scan status on load
+  checkSystemStatus();
+}
+
+async function checkSystemStatus() {
+  const indicator = document.getElementById('scan-indicator');
+  if (!indicator) return;
+
+  try {
+    // Check if we have recent data
+    const hardware = await api.getCurrentHardware();
+
+    if (hardware.status === 'no_data') {
+      // No data at all - run a scan
+      indicator.innerHTML = '<span style="color:var(--warning);">No system data. Scanning...</span>';
+      indicator.classList.add('btn-loading');
+
+      console.log('[Pulse] No system data found, running initial scan...');
+      const result = await api.collectAll();
+      console.log('[Pulse] Initial scan result:', result);
+
+      indicator.classList.remove('btn-loading');
+      indicator.innerHTML = '<span style="color:var(--success);">System scanned</span>';
+    } else {
+      indicator.innerHTML = '<span style="color:var(--success);">System data loaded</span>';
+    }
+  } catch (error) {
+    console.error('[Pulse] System status check failed:', error);
+    indicator.innerHTML = '<span style="color:var(--error);">Status check failed</span>';
+  }
 }
 
 async function runAnalysis() {
@@ -171,8 +202,8 @@ async function runAnalysis() {
   // Show progress
   analyzeBtn.disabled = true;
   analyzeBtn.textContent = 'Analyzing...';
-  progressDiv.classList.remove('hidden');
-  resultsDiv.classList.add('hidden');
+  progressDiv.style.display = 'block';
+  resultsDiv.style.display = 'none';
 
   // Animate progress with realistic timing
   let progress = 0;
@@ -218,7 +249,7 @@ async function runAnalysis() {
 
     if (analysis.error && !analysis.diagnosis) {
       showNotification(`Analysis failed: ${analysis.error}`, 'error');
-      progressDiv.classList.add('hidden');
+      progressDiv.style.display = 'none';
       return;
     }
 
@@ -227,7 +258,7 @@ async function runAnalysis() {
   } catch (error) {
     clearTimeout(timeout);
     clearInterval(stepInterval);
-    progressDiv.classList.add('hidden');
+    progressDiv.style.display = 'none';
 
     if (error.name === 'AbortError') {
       console.error('[Pulse] Analysis timed out after 60s');
@@ -245,7 +276,7 @@ async function runAnalysis() {
 
 function displayAnalysis(analysis) {
   const resultsDiv = document.getElementById('analysis-results');
-  resultsDiv.classList.remove('hidden');
+  resultsDiv.style.display = 'block';
 
   // Diagnosis
   const confidence = analysis.confidence || 0;
