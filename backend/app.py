@@ -128,7 +128,10 @@ def get_current_hardware():
             'monitors': [dict(m) for m in monitors] if monitors else [],
             'monitor_count': len(monitors) if monitors else 0,
             'cpu': hardware_states.get('cpu'),
-            'memory': hardware_states.get('memory')
+            'memory': hardware_states.get('memory'),
+            'motherboard': hardware_states.get('motherboard'),
+            'storage': hardware_states.get('storage'),
+            'network': hardware_states.get('network'),
         })
     except Exception as e:
         return jsonify({'status': 'error', 'error': str(e)}), 500
@@ -162,6 +165,42 @@ def get_monitors():
 
         monitors = db.get_monitor_states(row[0])
         return jsonify([dict(m) for m in monitors])
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/hardware/gpu/history')
+def get_gpu_history():
+    """Get GPU state history across snapshots"""
+    try:
+        limit = request.args.get('limit', 20, type=int)
+        rows = db.execute(
+            """SELECT g.*, s.timestamp, s.snapshot_type
+               FROM gpu_state g
+               JOIN snapshots s ON g.snapshot_id = s.id
+               ORDER BY s.timestamp DESC
+               LIMIT ?""",
+            (limit,)
+        ).fetchall()
+        return jsonify([dict(r) for r in rows])
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/hardware/monitors/history')
+def get_monitor_history():
+    """Get monitor state history across snapshots"""
+    try:
+        limit = request.args.get('limit', 20, type=int)
+        rows = db.execute(
+            """SELECT m.*, s.timestamp, s.snapshot_type
+               FROM monitor_state m
+               JOIN snapshots s ON m.snapshot_id = s.id
+               ORDER BY s.timestamp DESC
+               LIMIT ?""",
+            (limit,)
+        ).fetchall()
+        return jsonify([dict(r) for r in rows])
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -344,24 +383,30 @@ def analyze():
         )
         snapshot_id = db.create_snapshot(snapshot)
 
-        # Run collectors
-        try:
-            hw = HardwareCollector(db)
-            hw.collect(snapshot_id)
-        except Exception as e:
-            logger.warning(f"Hardware collection error during AI analysis: {e}")
+        # Run collectors in parallel for speed
+        import concurrent.futures
 
-        try:
-            mon = MonitorCollector(db)
-            mon.collect(snapshot_id)
-        except Exception as e:
-            logger.warning(f"Monitor collection error during AI analysis: {e}")
+        def _collect_hw():
+            try:
+                HardwareCollector(db).collect(snapshot_id)
+            except Exception as e:
+                logger.warning(f"Hardware collection error during AI analysis: {e}")
 
-        try:
-            rel = ReliabilityCollector(db)
-            rel.collect(snapshot_id, days=14)
-        except Exception as e:
-            logger.warning(f"Reliability collection error during AI analysis: {e}")
+        def _collect_mon():
+            try:
+                MonitorCollector(db).collect(snapshot_id)
+            except Exception as e:
+                logger.warning(f"Monitor collection error during AI analysis: {e}")
+
+        def _collect_rel():
+            try:
+                ReliabilityCollector(db).collect(snapshot_id, days=14)
+            except Exception as e:
+                logger.warning(f"Reliability collection error during AI analysis: {e}")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            futures = [executor.submit(_collect_hw), executor.submit(_collect_mon), executor.submit(_collect_rel)]
+            concurrent.futures.wait(futures, timeout=30)
 
         # Log the issue
         issue = Issue(
@@ -751,7 +796,9 @@ def debug_system_info():
 
 @app.route('/api/collect/all', methods=['POST'])
 def collect_all():
-    """Collect all data"""
+    """Collect all data using parallel threads for speed"""
+    import concurrent.futures
+
     try:
         # Create snapshot
         snapshot = Snapshot(
@@ -766,35 +813,41 @@ def collect_all():
             'collections': {}
         }
 
-        # Hardware
-        try:
-            hw = HardwareCollector(db)
-            if hw.collect(snapshot_id):
-                results['collections']['hardware'] = 'ok'
-            else:
-                results['collections']['hardware'] = 'no_data'
-        except Exception as e:
-            results['collections']['hardware'] = f'error: {str(e)}'
+        def collect_hardware():
+            try:
+                hw = HardwareCollector(db)
+                return 'ok' if hw.collect(snapshot_id) else 'no_data'
+            except Exception as e:
+                return f'error: {str(e)}'
 
-        # Monitors
-        try:
-            mon = MonitorCollector(db)
-            if mon.collect(snapshot_id):
-                results['collections']['monitors'] = 'ok'
-            else:
-                results['collections']['monitors'] = 'no_data'
-        except Exception as e:
-            results['collections']['monitors'] = f'error: {str(e)}'
+        def collect_monitors():
+            try:
+                mon = MonitorCollector(db)
+                return 'ok' if mon.collect(snapshot_id) else 'no_data'
+            except Exception as e:
+                return f'error: {str(e)}'
 
-        # Reliability Monitor
-        try:
-            rel = ReliabilityCollector(db)
-            if rel.collect(snapshot_id, days=30):
-                results['collections']['reliability'] = 'ok'
-            else:
-                results['collections']['reliability'] = 'no_data'
-        except Exception as e:
-            results['collections']['reliability'] = f'error: {str(e)}'
+        def collect_reliability():
+            try:
+                rel = ReliabilityCollector(db)
+                return 'ok' if rel.collect(snapshot_id, days=30) else 'no_data'
+            except Exception as e:
+                return f'error: {str(e)}'
+
+        # Run all collectors in parallel
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            hw_future = executor.submit(collect_hardware)
+            mon_future = executor.submit(collect_monitors)
+            rel_future = executor.submit(collect_reliability)
+
+            # Wait with timeout (45 seconds max)
+            results['collections']['hardware'] = hw_future.result(timeout=45)
+            results['collections']['monitors'] = mon_future.result(timeout=45)
+
+            try:
+                results['collections']['reliability'] = rel_future.result(timeout=45)
+            except concurrent.futures.TimeoutError:
+                results['collections']['reliability'] = 'timeout'
 
         return jsonify(results)
     except Exception as e:

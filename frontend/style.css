@@ -324,6 +324,18 @@ h1 {
     color: var(--text-secondary);
 }
 
+.timeline-item.timeline-error .timeline-content {
+    border-left: 2px solid var(--error);
+}
+
+.timeline-item.timeline-success .timeline-content {
+    border-left: 2px solid var(--success);
+}
+
+.timeline-item.timeline-info .timeline-content {
+    border-left: 2px solid var(--accent);
+}
+
 /* Hardware Sections */
 
 .hardware-section {
@@ -556,11 +568,145 @@ textarea {
     border-radius: 4px;
 }
 
+/* Clickable Hardware Cards */
+
+.hw-card {
+    transition: all 0.2s ease;
+}
+
+.hw-card:has(.hw-history-panel) {
+    cursor: pointer;
+}
+
+.hw-card:has(.hw-history-panel):hover {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px rgba(14, 165, 233, 0.2);
+}
+
+.hw-card.expanded {
+    border-color: var(--accent);
+}
+
+.hw-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.hw-card-header h3 {
+    margin-bottom: 0;
+}
+
+.hw-expand-hint {
+    font-size: 11px;
+    color: var(--text-secondary);
+    opacity: 0.5;
+    transition: opacity 0.2s;
+}
+
+.hw-card:hover .hw-expand-hint {
+    opacity: 1;
+    color: var(--accent);
+}
+
+.hw-history-panel {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.hw-history-panel.hidden {
+    display: none;
+}
+
+.hw-history-header {
+    margin-bottom: 10px;
+}
+
+.hw-history-header h4 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--accent);
+}
+
+/* Hardware Detail Tables */
+
+.hw-card[data-component="memory"],
+.hw-card[data-component="storage"] {
+    grid-column: 1 / -1;
+}
+
+.hw-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 8px;
+    font-size: 12px;
+    table-layout: auto;
+}
+
+.hw-table th {
+    text-align: left;
+    padding: 6px 10px;
+    background-color: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border);
+}
+
+.hw-table td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-primary);
+}
+
+.hw-table tr:last-child td {
+    border-bottom: none;
+}
+
+.hw-table tr:hover td {
+    background-color: rgba(14, 165, 233, 0.05);
+}
+
+.ram-sticks {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    overflow-x: auto;
+}
+
 /* Loading States */
 
 .loading {
     color: var(--text-secondary);
     font-style: italic;
+}
+
+.btn-loading {
+    position: relative;
+    pointer-events: none;
+}
+
+.btn-loading::after {
+    content: '';
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    margin-left: 8px;
+    border: 2px solid transparent;
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    vertical-align: middle;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
 }
 
 /* Responsive */

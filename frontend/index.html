@@ -18,7 +18,6 @@
             <button class="nav-btn" data-page="dashboard">Dashboard</button>
             <button class="nav-btn" data-page="issues">Issues</button>
             <button class="nav-btn" data-page="timeline">Timeline</button>
-            <button class="nav-btn" data-page="hardware">Hardware</button>
         </nav>
 
         <!-- Troubleshoot Page -->
@@ -86,31 +85,80 @@
             <h2>System Status</h2>
 
             <div class="status-grid">
-                <div class="card">
-                    <h3>GPU Status</h3>
+                <div class="card hw-card" data-component="gpu">
+                    <div class="hw-card-header">
+                        <h3>GPU</h3>
+                        <span class="hw-expand-hint">Click for history</span>
+                    </div>
                     <div id="gpu-status" class="status-content">
                         <p class="loading">Loading GPU information...</p>
                     </div>
-                </div>
-
-                <div class="card">
-                    <h3>Monitors</h3>
-                    <div id="monitors-status" class="status-content">
-                        <p class="loading">Loading monitor information...</p>
+                    <div id="gpu-history-panel" class="hw-history-panel hidden">
+                        <div class="hw-history-header"><h4>GPU History</h4></div>
+                        <div id="gpu-history" class="history-list">
+                            <p class="loading">Loading...</p>
+                        </div>
                     </div>
                 </div>
 
-                <div class="card">
-                    <h3>Memory</h3>
+                <div class="card hw-card" data-component="monitors">
+                    <div class="hw-card-header">
+                        <h3>Monitors</h3>
+                        <span class="hw-expand-hint">Click for history</span>
+                    </div>
+                    <div id="monitors-status" class="status-content">
+                        <p class="loading">Loading monitor information...</p>
+                    </div>
+                    <div id="monitors-history-panel" class="hw-history-panel hidden">
+                        <div class="hw-history-header"><h4>Monitor History</h4></div>
+                        <div id="monitor-history" class="history-list">
+                            <p class="loading">Loading...</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card hw-card" data-component="memory">
+                    <div class="hw-card-header">
+                        <h3>Memory</h3>
+                    </div>
                     <div id="memory-status" class="status-content">
                         <p class="loading">Loading memory information...</p>
                     </div>
                 </div>
 
-                <div class="card">
-                    <h3>CPU</h3>
+                <div class="card hw-card" data-component="cpu">
+                    <div class="hw-card-header">
+                        <h3>CPU</h3>
+                    </div>
                     <div id="cpu-status" class="status-content">
                         <p class="loading">Loading CPU information...</p>
+                    </div>
+                </div>
+
+                <div class="card hw-card" data-component="motherboard">
+                    <div class="hw-card-header">
+                        <h3>Motherboard</h3>
+                    </div>
+                    <div id="motherboard-status" class="status-content">
+                        <p class="loading">Loading motherboard information...</p>
+                    </div>
+                </div>
+
+                <div class="card hw-card" data-component="storage">
+                    <div class="hw-card-header">
+                        <h3>Storage</h3>
+                    </div>
+                    <div id="storage-status" class="status-content">
+                        <p class="loading">Loading storage information...</p>
+                    </div>
+                </div>
+
+                <div class="card hw-card" data-component="network">
+                    <div class="hw-card-header">
+                        <h3>Network</h3>
+                    </div>
+                    <div id="network-status" class="status-content">
+                        <p class="loading">Loading network information...</p>
                     </div>
                 </div>
             </div>
@@ -141,25 +189,6 @@
             <h2>System Timeline</h2>
             <div id="timeline-view" class="timeline">
                 <p class="loading">Loading timeline...</p>
-            </div>
-        </section>
-
-        <!-- Hardware Page -->
-        <section id="hardware" class="page">
-            <h2>Hardware History</h2>
-
-            <div class="hardware-section">
-                <h3>GPU History</h3>
-                <div id="gpu-history" class="history-list">
-                    <p class="loading">Loading GPU history...</p>
-                </div>
-            </div>
-
-            <div class="hardware-section">
-                <h3>Monitor History</h3>
-                <div id="monitor-history" class="history-list">
-                    <p class="loading">Loading monitor history...</p>
-                </div>
             </div>
         </section>
 

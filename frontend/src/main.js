@@ -6,7 +6,7 @@ import * as api from './api/client.js';
 import { initDashboard } from './pages/dashboard.js';
 import { initIssues } from './pages/issues.js';
 import { initTimeline } from './pages/timeline.js';
-import { initHardware } from './pages/hardware.js';
+// Hardware page removed - history now inline on Dashboard
 
 const API_BASE = 'http://localhost:5000';
 
@@ -93,9 +93,7 @@ async function loadPageData(pageName) {
       case 'timeline':
         await initTimeline();
         break;
-      case 'hardware':
-        await initHardware();
-        break;
+      // Hardware page removed - history is now inline on Dashboard cards
     }
   } catch (error) {
     console.error(`Failed to load ${pageName}:`, error);
@@ -434,21 +432,34 @@ function setupDataCollection() {
   if (!collectBtn) return;
 
   collectBtn.addEventListener('click', async () => {
+    const originalText = collectBtn.textContent;
     try {
       collectBtn.disabled = true;
+      collectBtn.textContent = 'Scanning...';
+      collectBtn.classList.add('btn-loading');
+      console.log('[Pulse] Starting data collection...');
+      const startTime = Date.now();
+
       const result = await api.collectAll();
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.log(`[Pulse] Collection completed in ${elapsed}s:`, result);
 
       if (result.status === 'success') {
-        showNotification('Data collected successfully!', 'success');
+        const parts = Object.entries(result.collections || {})
+          .map(([k, v]) => `${k}: ${v}`)
+          .join(', ');
+        showNotification(`Scan complete (${elapsed}s) - ${parts}`, 'success');
         await initDashboard();
       } else {
         showNotification('Data collection partially succeeded', 'warning');
       }
     } catch (error) {
-      console.error('Data collection failed:', error);
+      console.error('[Pulse] Data collection failed:', error);
       showNotification(`Collection failed: ${error}`, 'error');
     } finally {
       collectBtn.disabled = false;
+      collectBtn.textContent = originalText;
+      collectBtn.classList.remove('btn-loading');
     }
   });
 }

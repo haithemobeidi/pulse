@@ -1,14 +1,125 @@
 import * as api from '../api/client.js';
 import { showLoading, formatDate, formatTimeShort } from '../main.js';
 
+let historyClicksSetup = false;
+const historyLoaded = { gpu: false, monitors: false };
+
 export async function initDashboard() {
   console.log('Loading dashboard...');
 
-  // Load hardware data
-  await loadHardwareStatus();
+  // Set up clickable hardware cards FIRST (only once)
+  if (!historyClicksSetup) {
+    historyClicksSetup = true;
+    setupHardwareCardClicks();
+  }
 
-  // Load recent issues
-  await loadRecentIssues();
+  // Then load data
+  await Promise.all([
+    loadHardwareStatus(),
+    loadRecentIssues(),
+  ]);
+}
+
+function setupHardwareCardClicks() {
+  document.querySelectorAll('.hw-card[data-component]').forEach((card) => {
+    const component = card.dataset.component;
+    const panel = card.querySelector('.hw-history-panel');
+    if (!panel) return;
+
+    card.addEventListener('click', async (e) => {
+      // Don't toggle if clicking a link, button, or table cell
+      if (e.target.closest('a, button, td, th')) return;
+
+      panel.classList.toggle('hidden');
+      card.classList.toggle('expanded');
+
+      const justOpened = !panel.classList.contains('hidden');
+      if (justOpened && !historyLoaded[component]) {
+        historyLoaded[component] = true;
+        if (component === 'gpu') await loadGPUHistory();
+        if (component === 'monitors') await loadMonitorHistory();
+      }
+    });
+  });
+}
+
+async function loadGPUHistory() {
+  const container = document.getElementById('gpu-history');
+  if (!container) return;
+
+  try {
+    const history = await api.getGPUHistory(20);
+
+    if (history.length === 0) {
+      container.innerHTML = '<p class="loading">No GPU history yet. Collect data to start tracking.</p>';
+      return;
+    }
+
+    let lastDriver = '';
+    let html = '';
+
+    history.forEach((gpu, idx) => {
+      const changed = idx > 0 && gpu.driver_version !== lastDriver;
+      html += `
+        <div class="history-item ${changed ? 'changed' : ''}">
+          <div class="history-time">${formatDate(gpu.timestamp || new Date().toISOString())}</div>
+          <div class="history-content">
+<strong>${escapeHtml(gpu.gpu_name)}</strong>
+Driver: ${escapeHtml(gpu.driver_version || 'Unknown')}
+${gpu.vram_total_mb ? `VRAM: ${(gpu.vram_total_mb / 1024).toFixed(1)} GB` : ''}
+${gpu.temperature_c ? `Temp: ${gpu.temperature_c}°C` : ''}
+${changed ? '<span style="color:var(--warning);font-weight:bold;">DRIVER CHANGED</span>' : ''}
+          </div>
+        </div>
+      `;
+      lastDriver = gpu.driver_version;
+    });
+
+    container.innerHTML = html;
+  } catch (error) {
+    container.innerHTML = `<p class="error">Failed to load GPU history: ${error}</p>`;
+  }
+}
+
+async function loadMonitorHistory() {
+  const container = document.getElementById('monitor-history');
+  if (!container) return;
+
+  try {
+    const history = await api.getMonitorHistory(30);
+
+    if (history.length === 0) {
+      container.innerHTML = '<p class="loading">No monitor history yet. Collect data to start tracking.</p>';
+      return;
+    }
+
+    const bySnapshot = {};
+    history.forEach((mon) => {
+      const key = mon.timestamp || 'unknown';
+      if (!bySnapshot[key]) bySnapshot[key] = [];
+      bySnapshot[key].push(mon);
+    });
+
+    let html = '';
+    const sorted = Object.entries(bySnapshot).sort(
+      ([ts1], [ts2]) => new Date(ts2).getTime() - new Date(ts1).getTime()
+    );
+
+    sorted.forEach(([timestamp, monitors]) => {
+      html += `
+        <div class="history-item">
+          <div class="history-time">${formatDate(timestamp)}</div>
+          <div class="history-content">
+${monitors.map((m) => `<div>${escapeHtml(m.monitor_name)} - ${escapeHtml(m.connection_type)} (${m.status})</div>`).join('')}
+          </div>
+        </div>
+      `;
+    });
+
+    container.innerHTML = html;
+  } catch (error) {
+    container.innerHTML = `<p class="error">Failed to load monitor history: ${error}</p>`;
+  }
 }
 
 async function loadHardwareStatus() {
@@ -53,30 +164,146 @@ async function loadHardwareStatus() {
 
     // Memory Status
     const memoryData = hardware.memory ? JSON.parse(hardware.memory) : null;
-    const memoryHtml = memoryData
-      ? `
+    let memoryHtml = '<p>No memory data available</p>';
+    if (memoryData) {
+      let sticksHtml = '';
+      if (memoryData.sticks && memoryData.sticks.length > 0) {
+        sticksHtml = `
+          <div class="ram-sticks">
+            <p><strong>Configuration:</strong> ${memoryData.slots_used || memoryData.sticks.length} of ${memoryData.slots_total || '?'} slots used</p>
+            <table class="hw-table">
+              <thead><tr><th>Slot</th><th>Size</th><th>Speed</th><th>Type</th><th>Manufacturer</th><th>Part #</th></tr></thead>
+              <tbody>
+                ${memoryData.sticks.map(s => `
+                  <tr>
+                    <td>${escapeHtml(s.slot || '—')}</td>
+                    <td>${s.capacity_gb || '?'} GB</td>
+                    <td>${s.speed_mhz || '?'} MHz</td>
+                    <td>${escapeHtml(s.type || '?')}</td>
+                    <td>${escapeHtml(s.manufacturer || '—')}</td>
+                    <td>${escapeHtml(s.part_number || '—')}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>`;
+      }
+      memoryHtml = `
         <div class="hw-item">
-          <p><strong>Total:</strong> ${memoryData.total_gb || 'Unknown'} GB</p>
+          <p><strong>Total:</strong> ${memoryData.total_gb || 'Unknown'} GB ${memoryData.memory_type ? `(${memoryData.memory_type})` : ''}</p>
           <p><strong>Available:</strong> ${memoryData.available_gb || 'Unknown'} GB</p>
-          <p><strong>Used:</strong> ${memoryData.percent_used || 'Unknown'}%</p>
+          <p><strong>Used:</strong> ${memoryData.used_gb || 'Unknown'} GB (${memoryData.percent_used || 'Unknown'}%)</p>
+          ${sticksHtml}
         </div>
-      `
-      : '<p>No memory data available</p>';
+      `;
+    }
     document.getElementById('memory-status').innerHTML = memoryHtml;
 
     // CPU Status
     const cpuData = hardware.cpu ? JSON.parse(hardware.cpu) : null;
-    const cpuHtml = cpuData
-      ? `
+    let cpuHtml = '<p>No CPU data available</p>';
+    if (cpuData) {
+      cpuHtml = `
         <div class="hw-item">
+          ${cpuData.name ? `<p><strong>Model:</strong> ${escapeHtml(cpuData.name)}</p>` : ''}
+          ${cpuData.architecture ? `<p><strong>Architecture:</strong> ${escapeHtml(cpuData.architecture)}</p>` : ''}
           <p><strong>Cores:</strong> ${cpuData.physical_cores || 'Unknown'} cores / ${cpuData.logical_processors || 'Unknown'} threads</p>
           <p><strong>Usage:</strong> ${cpuData.usage_percent || 'Unknown'}%</p>
           <p><strong>Base Frequency:</strong> ${cpuData.frequency_mhz ? (cpuData.frequency_mhz / 1000).toFixed(2) : 'Unknown'} GHz</p>
           ${cpuData.max_frequency_mhz ? `<p><strong>Max Frequency:</strong> ${(cpuData.max_frequency_mhz / 1000).toFixed(2)} GHz</p>` : ''}
+          ${cpuData.l3_cache_mb ? `<p><strong>L3 Cache:</strong> ${cpuData.l3_cache_mb} MB</p>` : ''}
+          ${cpuData.socket ? `<p><strong>Socket:</strong> ${escapeHtml(cpuData.socket)}</p>` : ''}
         </div>
-      `
-      : '<p>No CPU data available</p>';
+      `;
+    }
     document.getElementById('cpu-status').innerHTML = cpuHtml;
+
+    // Motherboard Status
+    const mbData = hardware.motherboard ? JSON.parse(hardware.motherboard) : null;
+    let mbHtml = '<p>No motherboard data available</p>';
+    if (mbData) {
+      // Format BIOS date from WMI format (20241205000000.000000+000) to readable
+      let biosDate = mbData.bios_date || '';
+      if (biosDate && biosDate.length >= 8) {
+        const y = biosDate.substring(0, 4);
+        const m = biosDate.substring(4, 6);
+        const d = biosDate.substring(6, 8);
+        biosDate = `${m}/${d}/${y}`;
+      }
+
+      mbHtml = `
+        <div class="hw-item">
+          ${mbData.manufacturer ? `<p><strong>Manufacturer:</strong> ${escapeHtml(mbData.manufacturer)}</p>` : ''}
+          ${mbData.product ? `<p><strong>Model:</strong> ${escapeHtml(mbData.product)}</p>` : ''}
+          ${mbData.version ? `<p><strong>Version:</strong> ${escapeHtml(mbData.version)}</p>` : ''}
+          ${mbData.bios_version ? `<p><strong>BIOS:</strong> ${escapeHtml(mbData.bios_version)}${biosDate ? ` (${biosDate})` : ''}</p>` : ''}
+          ${mbData.serial ? `<p><strong>Serial:</strong> ${escapeHtml(mbData.serial)}</p>` : ''}
+        </div>
+      `;
+    }
+    document.getElementById('motherboard-status').innerHTML = mbHtml;
+
+    // Storage Status
+    const storageData = hardware.storage ? JSON.parse(hardware.storage) : null;
+    let storageHtml = '<p>No storage data available</p>';
+    if (storageData) {
+      let drivesHtml = '';
+      if (storageData.drives && storageData.drives.length > 0) {
+        drivesHtml = storageData.drives.map(d => `
+          <div style="margin-bottom:8px;padding:6px 0;border-bottom:1px solid var(--border);">
+            <p><strong>${escapeHtml(d.model || 'Unknown Drive')}</strong> <span style="color:var(--accent);">${escapeHtml(d.drive_type || '')}</span></p>
+            <p style="color:var(--text-secondary);font-size:12px;">
+              ${d.size_gb ? `${d.size_gb} GB` : ''}
+              ${d.interface ? ` | ${escapeHtml(d.interface)}` : ''}
+              ${d.firmware ? ` | FW: ${escapeHtml(d.firmware)}` : ''}
+            </p>
+          </div>
+        `).join('');
+      }
+
+      let partitionsHtml = '';
+      if (storageData.partitions && storageData.partitions.length > 0) {
+        partitionsHtml = '<div style="margin-top:8px;">' + storageData.partitions.map(p => {
+          const pct = p.percent_used || 0;
+          const barColor = pct > 90 ? 'var(--error)' : pct > 70 ? 'var(--warning)' : 'var(--success)';
+          return `
+            <div style="margin-bottom:6px;">
+              <div style="display:flex;justify-content:space-between;font-size:12px;">
+                <span><strong>${escapeHtml(p.mount)}</strong> (${escapeHtml(p.fstype || '')})</span>
+                <span>${p.free_gb} GB free of ${p.total_gb} GB</span>
+              </div>
+              <div style="height:4px;background:var(--bg-tertiary);border-radius:2px;margin-top:3px;">
+                <div style="height:100%;width:${pct}%;background:${barColor};border-radius:2px;"></div>
+              </div>
+            </div>
+          `;
+        }).join('') + '</div>';
+      }
+
+      storageHtml = `<div class="hw-item">${drivesHtml}${partitionsHtml}</div>`;
+    }
+    document.getElementById('storage-status').innerHTML = storageHtml;
+
+    // Network Status
+    const netData = hardware.network ? JSON.parse(hardware.network) : null;
+    let netHtml = '<p>No network data available</p>';
+    if (netData && netData.adapters && netData.adapters.length > 0) {
+      netHtml = '<div class="hw-item">' + netData.adapters.map(a => {
+        const statusColor = a.status === 'Connected' ? 'var(--success)' : 'var(--text-secondary)';
+        return `
+          <div style="margin-bottom:8px;padding:6px 0;border-bottom:1px solid var(--border);">
+            <p><strong>${escapeHtml(a.name || 'Unknown')}</strong></p>
+            <p style="color:var(--text-secondary);font-size:12px;">
+              <span style="color:${statusColor};">${a.status || 'Unknown'}</span>
+              ${a.connection_name ? ` | ${escapeHtml(a.connection_name)}` : ''}
+              ${a.speed_mbps ? ` | ${a.speed_mbps >= 1000 ? (a.speed_mbps / 1000) + ' Gbps' : a.speed_mbps + ' Mbps'}` : ''}
+              ${a.type ? ` | ${escapeHtml(a.type)}` : ''}
+            </p>
+          </div>
+        `;
+      }).join('') + '</div>';
+    }
+    document.getElementById('network-status').innerHTML = netHtml;
   } catch (error) {
     console.error('Failed to load hardware status:', error);
     document.getElementById('gpu-status').innerHTML = `<p class="error">Error: ${error}</p>`;

@@ -109,19 +109,20 @@ class ReliabilityCollector(BaseCollector):
             List of reliability record dictionaries
         """
         # PowerShell query for reliability records
-        # Win32_ReliabilityRecords contains all reliability monitor data
+        # Get-CimInstance returns DateTime objects, so compare with DateTime
         ps_command = (
-            f"$cutoff = (Get-Date).AddDays(-{days}).ToString('yyyyMMddHHmmss.000000+000'); "
+            f"$cutoff = (Get-Date).AddDays(-{days}); "
             "$records = Get-CimInstance -ClassName Win32_ReliabilityRecords "
             "-ErrorAction SilentlyContinue | "
             f"Where-Object {{ $_.TimeGenerated -ge $cutoff }} | "
-            "Select-Object @{Name='SourceName';Expression={$_.SourceName}}, "
-            "@{Name='Message';Expression={if($_.Message.Length -gt 500){$_.Message.Substring(0,500)}else{$_.Message}}}, "
+            "Sort-Object -Property TimeGenerated -Descending | "
+            "Select-Object -First 50 -Property "
+            "@{Name='SourceName';Expression={$_.SourceName}}, "
+            "@{Name='Message';Expression={if($_.Message -and $_.Message.Length -gt 500){$_.Message.Substring(0,500)}else{$_.Message}}}, "
             "@{Name='TimeGenerated';Expression={$_.TimeGenerated.ToString('yyyy-MM-dd HH:mm:ss')}}, "
             "@{Name='ProductName';Expression={$_.ProductName}}, "
             "@{Name='EventIdentifier';Expression={$_.EventIdentifier}}, "
-            "@{Name='RecordNumber';Expression={$_.RecordNumber}} "
-            "-First 200; "
+            "@{Name='RecordNumber';Expression={$_.RecordNumber}}; "
             "$records | ConvertTo-Json -Depth 3"
         )
 

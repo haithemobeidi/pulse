@@ -74,6 +74,21 @@ class HardwareCollector(BaseCollector):
             collected = True
             self.log_info("Memory data collected")
 
+        # Collect motherboard data
+        if self._collect_motherboard(snapshot_id):
+            collected = True
+            self.log_info("Motherboard data collected")
+
+        # Collect storage drives
+        if self._collect_storage(snapshot_id):
+            collected = True
+            self.log_info("Storage data collected")
+
+        # Collect network adapters
+        if self._collect_network(snapshot_id):
+            collected = True
+            self.log_info("Network data collected")
+
         return collected
 
     def _collect_gpu(self, snapshot_id: int) -> bool:
@@ -472,23 +487,54 @@ class HardwareCollector(BaseCollector):
         return None
 
     def _collect_cpu(self, snapshot_id: int) -> bool:
-        """Collect CPU information using psutil"""
+        """Collect CPU information using psutil + WMI"""
         if not psutil:
             self.log_warning("psutil not installed, skipping CPU collection")
             return False
 
         try:
-            # Get CPU info
+            # Get CPU info from psutil
             cpu_count = psutil.cpu_count(logical=False)  # Physical cores
             cpu_count_logical = psutil.cpu_count(logical=True)  # Logical processors
             cpu_freq = psutil.cpu_freq()
             cpu_percent = psutil.cpu_percent(interval=1)
 
+            # Get CPU name/brand from WMI
+            cpu_name = None
+            cpu_manufacturer = None
+            cpu_architecture = None
+            cpu_socket = None
+            cpu_l2_cache_kb = None
+            cpu_l3_cache_kb = None
+            if wmi:
+                try:
+                    c = wmi.WMI()
+                    processors = c.Win32_Processor()
+                    if processors:
+                        p = processors[0]
+                        cpu_name = p.Name.strip() if p.Name else None
+                        cpu_manufacturer = p.Manufacturer
+                        cpu_socket = p.SocketDesignation
+                        cpu_l2_cache_kb = p.L2CacheSize
+                        cpu_l3_cache_kb = p.L3CacheSize
+                        # Architecture: 0=x86, 9=x64, 12=ARM64
+                        arch_map = {0: "x86", 9: "x64", 5: "ARM", 12: "ARM64"}
+                        cpu_architecture = arch_map.get(p.Architecture, f"Unknown ({p.Architecture})")
+                        self.log_info(f"WMI CPU: {cpu_name}")
+                except Exception as e:
+                    self.log_warning(f"WMI CPU query failed: {e}")
+
             component_data = json.dumps({
+                "name": cpu_name,
+                "manufacturer": cpu_manufacturer,
+                "architecture": cpu_architecture,
+                "socket": cpu_socket,
                 "physical_cores": cpu_count,
                 "logical_processors": cpu_count_logical,
                 "frequency_mhz": int(cpu_freq.current) if cpu_freq else None,
                 "max_frequency_mhz": int(cpu_freq.max) if cpu_freq else None,
+                "l2_cache_kb": cpu_l2_cache_kb,
+                "l3_cache_mb": round(cpu_l3_cache_kb / 1024, 1) if cpu_l3_cache_kb else None,
                 "usage_percent": cpu_percent
             })
 
@@ -499,7 +545,7 @@ class HardwareCollector(BaseCollector):
             )
 
             self.db.create_hardware_state(hardware)
-            self.log_info(f"Recorded CPU: {cpu_count} cores @ {cpu_freq.current if cpu_freq else 'N/A'}MHz")
+            self.log_info(f"Recorded CPU: {cpu_name or 'Unknown'} ({cpu_count} cores @ {cpu_freq.current if cpu_freq else 'N/A'}MHz)")
             return True
 
         except Exception as e:
@@ -507,7 +553,7 @@ class HardwareCollector(BaseCollector):
             return False
 
     def _collect_memory(self, snapshot_id: int) -> bool:
-        """Collect memory information using psutil"""
+        """Collect memory information using psutil + WMI"""
         if not psutil:
             self.log_warning("psutil not installed, skipping memory collection")
             return False
@@ -515,12 +561,69 @@ class HardwareCollector(BaseCollector):
         try:
             mem = psutil.virtual_memory()
 
+            # Get detailed RAM stick info from WMI
+            sticks = []
+            total_slots = None
+            memory_type_name = None
+            if wmi:
+                try:
+                    c = wmi.WMI()
+                    # Get individual RAM sticks
+                    for stick in c.Win32_PhysicalMemory():
+                        speed = stick.ConfiguredClockSpeed or stick.Speed
+                        capacity_gb = round(int(stick.Capacity or 0) / (1024**3), 1) if stick.Capacity else None
+                        # Memory type: 26=DDR4, 34=DDR5
+                        mem_type_map = {20: "DDR", 21: "DDR2", 22: "DDR2", 24: "DDR3", 26: "DDR4", 34: "DDR5"}
+                        mem_type = mem_type_map.get(stick.SMBIOSMemoryType, f"Type {stick.SMBIOSMemoryType}")
+                        if not memory_type_name:
+                            memory_type_name = mem_type
+
+                        # Build slot label from BankLabel + DeviceLocator
+                        bank = (stick.BankLabel or "").strip()
+                        locator = (stick.DeviceLocator or "").strip()
+                        if bank and locator and bank != locator:
+                            slot_label = f"{bank} / {locator}"
+                        elif bank:
+                            slot_label = bank
+                        elif locator:
+                            slot_label = locator
+                        else:
+                            slot_label = f"Slot {len(sticks) + 1}"
+
+                        # Deduplicate: if this label already used, add index
+                        existing_labels = [s['slot'] for s in sticks]
+                        if slot_label in existing_labels:
+                            slot_label = f"{slot_label} (#{len(sticks) + 1})"
+
+                        stick_info = {
+                            "manufacturer": (stick.Manufacturer or "").strip(),
+                            "part_number": (stick.PartNumber or "").strip(),
+                            "serial": (stick.SerialNumber or "").strip(),
+                            "capacity_gb": capacity_gb,
+                            "speed_mhz": speed,
+                            "type": mem_type,
+                            "slot": slot_label,
+                            "form_factor": {8: "DIMM", 12: "SO-DIMM"}.get(stick.FormFactor, f"Type {stick.FormFactor}")
+                        }
+                        sticks.append(stick_info)
+                        self.log_info(f"RAM Stick: {stick_info['manufacturer']} {stick_info['part_number']} {capacity_gb}GB {mem_type}-{speed}MHz ({slot_label})")
+
+                    # Get total slot count
+                    for array in c.Win32_PhysicalMemoryArray():
+                        total_slots = array.MemoryDevices
+                except Exception as e:
+                    self.log_warning(f"WMI memory query failed: {e}")
+
             component_data = json.dumps({
                 "total_gb": round(mem.total / (1024**3), 2),
                 "available_gb": round(mem.available / (1024**3), 2),
                 "used_gb": round(mem.used / (1024**3), 2),
                 "percent_used": mem.percent,
-                "percent_available": 100 - mem.percent
+                "percent_available": 100 - mem.percent,
+                "memory_type": memory_type_name,
+                "sticks": sticks,
+                "slots_used": len(sticks),
+                "slots_total": total_slots
             })
 
             hardware = HardwareState(
@@ -530,9 +633,175 @@ class HardwareCollector(BaseCollector):
             )
 
             self.db.create_hardware_state(hardware)
-            self.log_info(f"Recorded Memory: {mem.total / (1024**3):.1f}GB total, {mem.percent}% used")
+            self.log_info(f"Recorded Memory: {mem.total / (1024**3):.1f}GB total ({len(sticks)} sticks), {mem.percent}% used")
             return True
 
         except Exception as e:
             self.log_error(f"Failed to collect memory data: {e}")
+            return False
+
+    def _collect_motherboard(self, snapshot_id: int) -> bool:
+        """Collect motherboard info using WMI"""
+        if not wmi:
+            return False
+
+        try:
+            c = wmi.WMI()
+
+            # Win32_BaseBoard = motherboard
+            boards = c.Win32_BaseBoard()
+            board = boards[0] if boards else None
+
+            # Win32_BIOS = BIOS info
+            bioses = c.Win32_BIOS()
+            bios = bioses[0] if bioses else None
+
+            if not board and not bios:
+                return False
+
+            component_data = json.dumps({
+                "manufacturer": (board.Manufacturer or "").strip() if board else None,
+                "product": (board.Product or "").strip() if board else None,
+                "version": (board.Version or "").strip() if board else None,
+                "serial": (board.SerialNumber or "").strip() if board else None,
+                "bios_vendor": (bios.Manufacturer or "").strip() if bios else None,
+                "bios_version": (bios.SMBIOSBIOSVersion or "").strip() if bios else None,
+                "bios_date": (bios.ReleaseDate or "").split(".")[0] if bios and bios.ReleaseDate else None,
+            })
+
+            hardware = HardwareState(
+                snapshot_id=snapshot_id,
+                component_type="motherboard",
+                component_data=component_data
+            )
+
+            self.db.create_hardware_state(hardware)
+            name = f"{board.Manufacturer} {board.Product}" if board else "Unknown"
+            self.log_info(f"Recorded Motherboard: {name}")
+            return True
+
+        except Exception as e:
+            self.log_error(f"Failed to collect motherboard data: {e}")
+            return False
+
+    def _collect_storage(self, snapshot_id: int) -> bool:
+        """Collect storage drive info using WMI + psutil"""
+        try:
+            drives = []
+
+            # Get physical disk info from WMI
+            if wmi:
+                try:
+                    c = wmi.WMI()
+                    for disk in c.Win32_DiskDrive():
+                        size_gb = round(int(disk.Size or 0) / (1024**3), 1) if disk.Size else None
+                        media_type = (disk.MediaType or "").strip()
+                        # Detect NVMe/SSD from model name or interface
+                        interface = (disk.InterfaceType or "").strip()
+                        model = (disk.Model or "").strip()
+
+                        drive_type = "Unknown"
+                        if "nvme" in model.lower() or "nvme" in interface.lower():
+                            drive_type = "NVMe SSD"
+                        elif "ssd" in model.lower() or "solid" in media_type.lower():
+                            drive_type = "SSD"
+                        elif "hdd" in model.lower() or "fixed" in media_type.lower():
+                            drive_type = "HDD"
+
+                        drives.append({
+                            "model": model,
+                            "serial": (disk.SerialNumber or "").strip(),
+                            "size_gb": size_gb,
+                            "interface": interface,
+                            "drive_type": drive_type,
+                            "firmware": (disk.FirmwareRevision or "").strip(),
+                        })
+                        self.log_info(f"Drive: {model} ({size_gb}GB, {drive_type}, {interface})")
+                except Exception as e:
+                    self.log_warning(f"WMI disk query failed: {e}")
+
+            # Get partition usage from psutil
+            partitions = []
+            if psutil:
+                for part in psutil.disk_partitions(all=False):
+                    try:
+                        usage = psutil.disk_usage(part.mountpoint)
+                        partitions.append({
+                            "mount": part.mountpoint,
+                            "fstype": part.fstype,
+                            "total_gb": round(usage.total / (1024**3), 1),
+                            "used_gb": round(usage.used / (1024**3), 1),
+                            "free_gb": round(usage.free / (1024**3), 1),
+                            "percent_used": usage.percent,
+                        })
+                    except (PermissionError, OSError):
+                        pass
+
+            if not drives and not partitions:
+                return False
+
+            component_data = json.dumps({
+                "drives": drives,
+                "partitions": partitions,
+            })
+
+            hardware = HardwareState(
+                snapshot_id=snapshot_id,
+                component_type="storage",
+                component_data=component_data
+            )
+
+            self.db.create_hardware_state(hardware)
+            self.log_info(f"Recorded Storage: {len(drives)} drive(s), {len(partitions)} partition(s)")
+            return True
+
+        except Exception as e:
+            self.log_error(f"Failed to collect storage data: {e}")
+            return False
+
+    def _collect_network(self, snapshot_id: int) -> bool:
+        """Collect network adapter info using WMI"""
+        if not wmi:
+            return False
+
+        try:
+            c = wmi.WMI()
+            adapters = []
+
+            for nic in c.Win32_NetworkAdapter(PhysicalAdapter=True):
+                # Get IP config for this adapter
+                speed_mbps = None
+                if nic.Speed:
+                    try:
+                        speed_mbps = round(int(nic.Speed) / 1_000_000)
+                    except (ValueError, TypeError):
+                        pass
+
+                adapters.append({
+                    "name": (nic.Name or "").strip(),
+                    "manufacturer": (nic.Manufacturer or "").strip(),
+                    "mac_address": nic.MACAddress,
+                    "speed_mbps": speed_mbps,
+                    "type": (nic.AdapterType or "").strip(),
+                    "status": "Connected" if nic.NetConnectionStatus == 2 else "Disconnected",
+                    "connection_name": (nic.NetConnectionID or "").strip(),
+                })
+
+            if not adapters:
+                return False
+
+            component_data = json.dumps({"adapters": adapters})
+
+            hardware = HardwareState(
+                snapshot_id=snapshot_id,
+                component_type="network",
+                component_data=component_data
+            )
+
+            self.db.create_hardware_state(hardware)
+            self.log_info(f"Recorded Network: {len(adapters)} adapter(s)")
+            return True
+
+        except Exception as e:
+            self.log_error(f"Failed to collect network data: {e}")
             return False

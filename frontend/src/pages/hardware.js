@@ -28,7 +28,7 @@ async function loadGPUHistory() {
       const changed = idx > 0 && gpu.driver_version !== lastDriver;
       html += `
         <div class="history-item ${changed ? 'changed' : ''}">
-          <div class="history-time">${formatDate(gpu.snapshot_id || new Date().toISOString())}</div>
+          <div class="history-time">${formatDate(gpu.timestamp || new Date().toISOString())}</div>
           <div class="history-content">
 <strong>${gpu.gpu_name}</strong>
 Driver: ${gpu.driver_version || 'Unknown'}

@@ -9,22 +9,44 @@ export async function initTimeline() {
   showLoading('timeline-view');
 
   try {
-    const [snapshots, issues] = await Promise.all([
-      api.getSnapshots(30),
+    // Load reliability records - this is where driver updates, installs, crashes live
+    const [reliabilityResp, issues] = await Promise.all([
+      fetch('http://localhost:5000/api/reliability/recent?limit=200').then(r => r.json()),
       api.getIssues(100),
     ]);
 
-    const timelineItems = [
-      ...snapshots.map((s) => ({ type: 'snapshot', data: s })),
-      ...issues.map((i) => ({ type: 'issue', data: i })),
-    ].sort((a, b) => {
-      const dateA = new Date(a.data.timestamp).getTime();
-      const dateB = new Date(b.data.timestamp).getTime();
+    const reliability = Array.isArray(reliabilityResp) ? reliabilityResp : [];
+
+    // Build timeline items from reliability records + issues
+    const timelineItems = [];
+
+    reliability.forEach((r) => {
+      timelineItems.push({
+        type: 'reliability',
+        category: r.record_type || 'misc_failure',
+        data: r,
+        timestamp: r.event_time || r.timestamp || '',
+      });
+    });
+
+    issues.forEach((i) => {
+      timelineItems.push({
+        type: 'issue',
+        category: i.issue_type,
+        data: i,
+        timestamp: i.timestamp || '',
+      });
+    });
+
+    // Sort newest first
+    timelineItems.sort((a, b) => {
+      const dateA = new Date(a.timestamp).getTime() || 0;
+      const dateB = new Date(b.timestamp).getTime() || 0;
       return dateB - dateA;
     });
 
     if (timelineItems.length === 0) {
-      container.innerHTML = '<p class="loading">No data yet</p>';
+      container.innerHTML = '<p class="loading">No timeline data yet. Click "Collect Data" on the Dashboard to scan your system.</p>';
       return;
     }
 
@@ -36,7 +58,7 @@ export async function initTimeline() {
           <div class="timeline-item">
             <div class="timeline-content">
               <div class="timeline-time">${formatDate(issue.timestamp)}</div>
-              <div class="timeline-title">Issue: ${formatIssueType(issue.issue_type)}</div>
+              <div class="timeline-title">${getIcon('issue')} Issue: ${formatType(issue.issue_type)}</div>
               <div class="timeline-desc">${escapeHtml(issue.description)}</div>
               <div class="timeline-desc" style="margin-top: 5px; color: #a0a0a0;">
                 Severity: <strong>${issue.severity}</strong>
@@ -45,13 +67,18 @@ export async function initTimeline() {
           </div>
         `;
       } else {
-        const snapshot = item.data;
+        const r = item.data;
+        const category = item.category;
         html += `
-          <div class="timeline-item">
+          <div class="timeline-item timeline-${getCategoryClass(category)}">
             <div class="timeline-content">
-              <div class="timeline-time">${formatDate(snapshot.timestamp)}</div>
-              <div class="timeline-title">Snapshot: ${formatSnapshotType(snapshot.snapshot_type)}</div>
-              ${snapshot.notes ? `<div class="timeline-desc">${escapeHtml(snapshot.notes)}</div>` : ''}
+              <div class="timeline-time">${formatDate(item.timestamp)}</div>
+              <div class="timeline-title">${getIcon(category)} ${formatType(category)}</div>
+              <div class="timeline-desc">
+                <strong>${escapeHtml(r.source_name || '')}</strong>
+                ${r.product_name ? ` - ${escapeHtml(r.product_name)}` : ''}
+              </div>
+              ${r.event_message ? `<div class="timeline-desc" style="margin-top:4px;color:#a0a0a0;font-size:12px;">${escapeHtml(r.event_message.substring(0, 300))}${r.event_message.length > 300 ? '...' : ''}</div>` : ''}
             </div>
           </div>
         `;
@@ -64,21 +91,35 @@ export async function initTimeline() {
   }
 }
 
-function formatIssueType(type) {
-  return type.split('_').map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+function getIcon(category) {
+  const icons = {
+    app_crash: '<span style="color:#ef4444;">&#x2716;</span>',
+    app_install: '<span style="color:#22c55e;">&#x2795;</span>',
+    app_uninstall: '<span style="color:#f59e0b;">&#x2796;</span>',
+    os_update: '<span style="color:#3b82f6;">&#x21BB;</span>',
+    os_crash: '<span style="color:#dc2626;">&#x26A0;</span>',
+    driver_crash: '<span style="color:#f97316;">&#x26A1;</span>',
+    hardware_failure: '<span style="color:#ef4444;">&#x2699;</span>',
+    misc_failure: '<span style="color:#a0a0a0;">&#x2022;</span>',
+    issue: '<span style="color:#f59e0b;">&#x25CF;</span>',
+  };
+  return icons[category] || icons.misc_failure;
 }
 
-function formatSnapshotType(type) {
-  const typeMap = {
-    scheduled: 'Scheduled Collection',
-    issue_logged: 'Issue Capture',
-    manual: 'Manual Snapshot',
-  };
-  return typeMap[type] || type;
+function getCategoryClass(category) {
+  if (category.includes('crash') || category.includes('failure')) return 'error';
+  if (category.includes('install')) return 'success';
+  if (category.includes('update')) return 'info';
+  return 'default';
+}
+
+function formatType(type) {
+  if (!type) return 'Unknown';
+  return type.split('_').map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
 }
 
 function escapeHtml(text) {
   const div = document.createElement('div');
-  div.textContent = text;
+  div.textContent = text || '';
   return div.innerHTML;
 }
