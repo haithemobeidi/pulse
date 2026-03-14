@@ -798,6 +798,10 @@ def debug_system_info():
 def collect_all():
     """Collect all data using parallel threads for speed"""
     import concurrent.futures
+    import time as _time
+
+    start = _time.time()
+    logger.info("=== COLLECT ALL: Starting ===")
 
     try:
         # Create snapshot
@@ -806,6 +810,7 @@ def collect_all():
             notes='Manual data collection'
         )
         snapshot_id = db.create_snapshot(snapshot)
+        logger.info(f"COLLECT: Snapshot {snapshot_id} created in {_time.time()-start:.1f}s")
 
         results = {
             'status': 'success',
@@ -814,43 +819,72 @@ def collect_all():
         }
 
         def collect_hardware():
+            t = _time.time()
             try:
+                logger.info("COLLECT: Hardware starting...")
                 hw = HardwareCollector(db)
-                return 'ok' if hw.collect(snapshot_id) else 'no_data'
+                result = 'ok' if hw.collect(snapshot_id) else 'no_data'
+                logger.info(f"COLLECT: Hardware done in {_time.time()-t:.1f}s -> {result}")
+                return result
             except Exception as e:
+                logger.error(f"COLLECT: Hardware FAILED in {_time.time()-t:.1f}s -> {e}")
                 return f'error: {str(e)}'
 
         def collect_monitors():
+            t = _time.time()
             try:
+                logger.info("COLLECT: Monitors starting...")
                 mon = MonitorCollector(db)
-                return 'ok' if mon.collect(snapshot_id) else 'no_data'
+                result = 'ok' if mon.collect(snapshot_id) else 'no_data'
+                logger.info(f"COLLECT: Monitors done in {_time.time()-t:.1f}s -> {result}")
+                return result
             except Exception as e:
+                logger.error(f"COLLECT: Monitors FAILED in {_time.time()-t:.1f}s -> {e}")
                 return f'error: {str(e)}'
 
         def collect_reliability():
+            t = _time.time()
             try:
+                logger.info("COLLECT: Reliability starting...")
                 rel = ReliabilityCollector(db)
-                return 'ok' if rel.collect(snapshot_id, days=30) else 'no_data'
+                result = 'ok' if rel.collect(snapshot_id, days=30) else 'no_data'
+                logger.info(f"COLLECT: Reliability done in {_time.time()-t:.1f}s -> {result}")
+                return result
             except Exception as e:
+                logger.error(f"COLLECT: Reliability FAILED in {_time.time()-t:.1f}s -> {e}")
                 return f'error: {str(e)}'
 
         # Run all collectors in parallel
+        logger.info("COLLECT: Launching 3 threads...")
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             hw_future = executor.submit(collect_hardware)
             mon_future = executor.submit(collect_monitors)
             rel_future = executor.submit(collect_reliability)
 
             # Wait with timeout (45 seconds max)
-            results['collections']['hardware'] = hw_future.result(timeout=45)
-            results['collections']['monitors'] = mon_future.result(timeout=45)
+            try:
+                results['collections']['hardware'] = hw_future.result(timeout=45)
+            except concurrent.futures.TimeoutError:
+                logger.error("COLLECT: Hardware TIMED OUT after 45s")
+                results['collections']['hardware'] = 'timeout'
+
+            try:
+                results['collections']['monitors'] = mon_future.result(timeout=45)
+            except concurrent.futures.TimeoutError:
+                logger.error("COLLECT: Monitors TIMED OUT after 45s")
+                results['collections']['monitors'] = 'timeout'
 
             try:
                 results['collections']['reliability'] = rel_future.result(timeout=45)
             except concurrent.futures.TimeoutError:
+                logger.error("COLLECT: Reliability TIMED OUT after 45s")
                 results['collections']['reliability'] = 'timeout'
 
+        elapsed = _time.time() - start
+        logger.info(f"=== COLLECT ALL: Done in {elapsed:.1f}s === Results: {results['collections']}")
         return jsonify(results)
     except Exception as e:
+        logger.error(f"=== COLLECT ALL: EXCEPTION after {_time.time()-start:.1f}s === {e}")
         return jsonify({'status': 'error', 'error': str(e)}), 500
 
 
@@ -864,6 +898,46 @@ def open_browser(port=5000):
     webbrowser.open(f'http://localhost:{port}')
 
 
+def startup_collect():
+    """Run initial data collection on server startup"""
+    import time as _time
+    _time.sleep(2)  # Wait for Flask to be ready
+    logger.info("=== STARTUP: Running initial data collection ===")
+    try:
+        snapshot = Snapshot(
+            snapshot_type=SnapshotType.SCHEDULED,
+            notes='Startup auto-collection'
+        )
+        snapshot_id = db.create_snapshot(snapshot)
+
+        import concurrent.futures
+        def _hw():
+            try:
+                HardwareCollector(db).collect(snapshot_id)
+            except Exception as e:
+                logger.warning(f"Startup hardware collect failed: {e}")
+
+        def _mon():
+            try:
+                MonitorCollector(db).collect(snapshot_id)
+            except Exception as e:
+                logger.warning(f"Startup monitor collect failed: {e}")
+
+        def _rel():
+            try:
+                ReliabilityCollector(db).collect(snapshot_id, days=30)
+            except Exception as e:
+                logger.warning(f"Startup reliability collect failed: {e}")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            futures = [executor.submit(_hw), executor.submit(_mon), executor.submit(_rel)]
+            concurrent.futures.wait(futures, timeout=45)
+
+        logger.info("=== STARTUP: Initial collection complete ===")
+    except Exception as e:
+        logger.error(f"=== STARTUP: Collection failed: {e} ===")
+
+
 if __name__ == '__main__':
     port = 5000
 
@@ -871,8 +945,12 @@ if __name__ == '__main__':
     thread = threading.Thread(target=open_browser, args=(port,), daemon=True)
     thread.start()
 
+    # Run initial data collection in background
+    collect_thread = threading.Thread(target=startup_collect, daemon=True)
+    collect_thread.start()
+
     print(f"\n{'='*50}")
-    print("PC-Inspector Started")
+    print("Pulse Started")
     print(f"{'='*50}")
     print(f"Dashboard: http://localhost:{port}")
     print(f"API: http://localhost:{port}/api/status")
