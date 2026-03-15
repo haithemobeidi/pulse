@@ -1,5 +1,6 @@
 import * as api from '../api/client.js';
 import { showLoading, formatDate } from '../main.js';
+import { escapeHtml, formatType, API_BASE } from '../utils.js';
 
 export async function initTimeline() {
   console.log('Loading timeline...');
@@ -11,7 +12,7 @@ export async function initTimeline() {
   try {
     // Load reliability records - this is where driver updates, installs, crashes live
     const [reliabilityResp, issues] = await Promise.all([
-      fetch('http://localhost:5000/api/reliability/recent?limit=200').then(r => r.json()),
+      fetch(`${API_BASE}/api/reliability/recent?limit=200`).then(r => r.json()),
       api.getIssues(100),
     ]);
 
@@ -113,13 +114,4 @@ function getCategoryClass(category) {
   return 'default';
 }
 
-function formatType(type) {
-  if (!type) return 'Unknown';
-  return type.split('_').map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
-}
-
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text || '';
-  return div.innerHTML;
-}
+// escapeHtml and formatType imported from utils.js

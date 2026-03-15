@@ -229,7 +229,9 @@ class Pattern:
     evidence: Optional[str] = None  # JSON list of issue_ids
     confidence: float = 0.0
     times_seen: int = 1
+    times_failed: int = 0
     last_seen: Optional[str] = None
+    last_activity_at: Optional[str] = None
     created_at: Optional[str] = None
     active: bool = True
 
@@ -246,6 +248,49 @@ class ConfigChange:
     component: str = None
     old_value: Optional[str] = None
     new_value: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+
+@dataclass
+class Embedding:
+    """Cached vector embedding for similarity search"""
+    id: Optional[int] = None
+    entity_type: Optional[str] = None  # 'issue', 'fix', 'pattern'
+    entity_id: Optional[int] = None
+    embedding: Optional[bytes] = None  # numpy array serialized
+    model: Optional[str] = None
+    created_at: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+
+@dataclass
+class Correction:
+    """User correction to AI output — feeds style learning"""
+    id: Optional[int] = None
+    correction_type: Optional[str] = None  # 'diagnosis_edit', 'fix_edit', 'response_edit'
+    original_text: Optional[str] = None
+    corrected_text: Optional[str] = None
+    context: Optional[str] = None  # JSON: issue_type, hardware_config, etc.
+    captured_at: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+
+@dataclass
+class StyleGuide:
+    """Generated style guide from user corrections"""
+    id: Optional[int] = None
+    scope: Optional[str] = None  # 'diagnosis', 'fix_suggestion', 'chat_response'
+    guide: Optional[str] = None
+    sample_count: int = 0
+    correction_count: int = 0
+    version: int = 1
+    generated_at: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
@@ -462,7 +507,9 @@ class Database:
             evidence TEXT,
             confidence REAL DEFAULT 0.0,
             times_seen INTEGER DEFAULT 1,
+            times_failed INTEGER DEFAULT 0,
             last_seen DATETIME,
+            last_activity_at DATETIME,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             active INTEGER DEFAULT 1
         );
@@ -481,10 +528,73 @@ class Database:
         );
         CREATE INDEX IF NOT EXISTS idx_config_changes_snapshot ON config_changes(snapshot_id);
         CREATE INDEX IF NOT EXISTS idx_config_changes_component ON config_changes(component);
+
+        -- Embeddings: Cached vector embeddings for similarity search
+        CREATE TABLE IF NOT EXISTS embeddings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_type TEXT NOT NULL,
+            entity_id INTEGER NOT NULL,
+            embedding BLOB NOT NULL,
+            model TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_embeddings_entity ON embeddings(entity_type, entity_id);
+
+        -- Corrections: User edits to AI output for style learning
+        CREATE TABLE IF NOT EXISTS corrections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            correction_type TEXT NOT NULL,
+            original_text TEXT NOT NULL,
+            corrected_text TEXT NOT NULL,
+            context TEXT,
+            captured_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_corrections_type ON corrections(correction_type);
+
+        -- Style Guides: Generated from correction patterns
+        CREATE TABLE IF NOT EXISTS style_guides (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope TEXT NOT NULL,
+            guide TEXT NOT NULL,
+            sample_count INTEGER DEFAULT 0,
+            correction_count INTEGER DEFAULT 0,
+            version INTEGER DEFAULT 1,
+            generated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_style_guides_scope ON style_guides(scope);
         """
 
         # Execute schema creation
         self.connection.executescript(schema_sql)
+        self.commit()
+
+        # Run migrations for existing databases
+        self._run_migrations()
+
+    def _run_migrations(self):
+        """Add columns/tables that may be missing from older databases."""
+        migrations = [
+            ("patterns", "times_failed", "ALTER TABLE patterns ADD COLUMN times_failed INTEGER DEFAULT 0"),
+            ("patterns", "last_activity_at", "ALTER TABLE patterns ADD COLUMN last_activity_at DATETIME"),
+            ("suggested_fixes", "holding_since", "ALTER TABLE suggested_fixes ADD COLUMN holding_since DATETIME"),
+            ("suggested_fixes", "auto_verify_at", "ALTER TABLE suggested_fixes ADD COLUMN auto_verify_at DATETIME"),
+        ]
+        for table, column, sql in migrations:
+            try:
+                cursor = self.connection.execute(f"PRAGMA table_info({table})")
+                columns = [row[1] for row in cursor.fetchall()]
+                if column not in columns:
+                    self.connection.execute(sql)
+            except Exception:
+                pass
+
+        # Backfill last_activity_at from last_seen where NULL
+        try:
+            self.connection.execute(
+                "UPDATE patterns SET last_activity_at = last_seen WHERE last_activity_at IS NULL AND last_seen IS NOT NULL"
+            )
+        except Exception:
+            pass
         self.commit()
 
     # ========================================================================
@@ -787,11 +897,11 @@ class Database:
         """Store a learned pattern"""
         cursor = self.execute(
             """
-            INSERT INTO patterns (pattern_type, description, evidence, confidence, times_seen, last_seen)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO patterns (pattern_type, description, evidence, confidence, times_seen, times_failed, last_seen, last_activity_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             """,
             (pattern.pattern_type, pattern.description, pattern.evidence,
-             pattern.confidence, pattern.times_seen)
+             pattern.confidence, pattern.times_seen, pattern.times_failed or 0)
         )
         self.commit()
         return cursor.lastrowid
@@ -827,6 +937,104 @@ class Database:
         cursor = self.execute(
             "SELECT * FROM config_changes WHERE snapshot_id = ?",
             (snapshot_id,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    # ========================================================================
+    # Embeddings CRUD
+    # ========================================================================
+
+    def store_embedding(self, entity_type: str, entity_id: int, embedding_blob: bytes, model: str) -> int:
+        """Store or update an embedding for an entity."""
+        # Remove existing embedding for this entity
+        self.execute(
+            "DELETE FROM embeddings WHERE entity_type = ? AND entity_id = ?",
+            (entity_type, entity_id)
+        )
+        cursor = self.execute(
+            "INSERT INTO embeddings (entity_type, entity_id, embedding, model) VALUES (?, ?, ?, ?)",
+            (entity_type, entity_id, embedding_blob, model)
+        )
+        self.commit()
+        return cursor.lastrowid
+
+    def get_embeddings_by_type(self, entity_type: str) -> List[Dict[str, Any]]:
+        """Get all embeddings of a given type."""
+        cursor = self.execute(
+            "SELECT * FROM embeddings WHERE entity_type = ?",
+            (entity_type,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    # ========================================================================
+    # Corrections CRUD
+    # ========================================================================
+
+    def create_correction(self, correction: 'Correction') -> int:
+        """Store a user correction."""
+        cursor = self.execute(
+            "INSERT INTO corrections (correction_type, original_text, corrected_text, context) VALUES (?, ?, ?, ?)",
+            (correction.correction_type, correction.original_text, correction.corrected_text, correction.context)
+        )
+        self.commit()
+        return cursor.lastrowid
+
+    def get_corrections(self, correction_type: str = None, since: str = None, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get corrections, optionally filtered by type and date."""
+        query = "SELECT * FROM corrections WHERE 1=1"
+        params = []
+        if correction_type:
+            query += " AND correction_type = ?"
+            params.append(correction_type)
+        if since:
+            query += " AND captured_at >= ?"
+            params.append(since)
+        query += " ORDER BY captured_at DESC LIMIT ?"
+        params.append(limit)
+        cursor = self.execute(query, tuple(params))
+        return [dict(row) for row in cursor.fetchall()]
+
+    def count_corrections(self, correction_type: str = None) -> int:
+        """Count corrections, optionally by type."""
+        if correction_type:
+            cursor = self.execute(
+                "SELECT COUNT(*) FROM corrections WHERE correction_type = ?",
+                (correction_type,)
+            )
+        else:
+            cursor = self.execute("SELECT COUNT(*) FROM corrections")
+        return cursor.fetchone()[0]
+
+    # ========================================================================
+    # Style Guides CRUD
+    # ========================================================================
+
+    def get_style_guide(self, scope: str) -> Optional[Dict[str, Any]]:
+        """Get the latest style guide for a scope."""
+        cursor = self.execute(
+            "SELECT * FROM style_guides WHERE scope = ? ORDER BY version DESC LIMIT 1",
+            (scope,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def create_style_guide(self, guide: 'StyleGuide') -> int:
+        """Store a new style guide version."""
+        cursor = self.execute(
+            "INSERT INTO style_guides (scope, guide, sample_count, correction_count, version) VALUES (?, ?, ?, ?, ?)",
+            (guide.scope, guide.guide, guide.sample_count, guide.correction_count, guide.version)
+        )
+        self.commit()
+        return cursor.lastrowid
+
+    # ========================================================================
+    # Suggested Fixes — holding state helpers
+    # ========================================================================
+
+    def get_fixes_in_holding(self) -> List[Dict[str, Any]]:
+        """Get fixes currently in holding state."""
+        cursor = self.execute(
+            "SELECT * FROM suggested_fixes WHERE status = 'holding'"
         )
         return [dict(row) for row in cursor.fetchall()]
 

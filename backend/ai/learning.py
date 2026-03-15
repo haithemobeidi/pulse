@@ -5,18 +5,25 @@ Tracks fix outcomes and detects patterns over time. When users report whether
 fixes worked, this engine builds correlations between symptoms, hardware,
 and successful fixes so future diagnoses improve.
 
-Three levels:
-1. Direct correlation - stores (symptom, hardware, fix, outcome) tuples
-2. Pattern detection - finds recurring clusters and correlations
-3. Preventive recommendations - generates proactive suggestions
+Features:
+- Direct correlation: stores (symptom, hardware, fix, outcome) tuples
+- Pattern detection: finds recurring clusters and correlations
+- Confidence decay: patterns lose relevance over time (H3-inspired exponential decay)
+- Preventive recommendations: generates proactive suggestions with decayed confidence
 """
 
 import json
+import hashlib
 import logging
+import math
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
+
+# Confidence decay: half-life of 30 days
+DECAY_HALF_LIFE_DAYS = 30
+DECAY_THRESHOLD = 0.1  # Below this, patterns are pruned from context
 
 
 class LearningEngine:
@@ -25,18 +32,84 @@ class LearningEngine:
     def __init__(self, db):
         self.db = db
 
+    # ========================================================================
+    # Confidence Decay (H3-inspired)
+    # ========================================================================
+
+    @staticmethod
+    def get_decayed_confidence(pattern: Dict[str, Any]) -> float:
+        """
+        Calculate effective confidence with exponential decay.
+        Formula: effective = stored_confidence * 0.5^(days_since_activity / 30)
+        """
+        stored = pattern.get('confidence', 0.0)
+        last_activity = pattern.get('last_activity_at') or pattern.get('last_seen')
+        if not last_activity or stored <= 0:
+            return stored
+
+        try:
+            last_dt = datetime.fromisoformat(last_activity.replace('Z', '+00:00')) if 'T' in last_activity else datetime.strptime(last_activity, '%Y-%m-%d %H:%M:%S')
+            days_since = (datetime.now() - last_dt.replace(tzinfo=None)).total_seconds() / 86400
+            if days_since <= 0:
+                return stored
+            decayed = stored * math.pow(0.5, days_since / DECAY_HALF_LIFE_DAYS)
+            return round(decayed, 4)
+        except Exception:
+            return stored
+
+    def get_active_patterns_decayed(self, pattern_type: str = None) -> List[Dict[str, Any]]:
+        """Get active patterns with decayed confidence values, sorted by relevance."""
+        patterns = self.db.get_active_patterns(pattern_type)
+        result = []
+        for p in patterns:
+            p = dict(p)
+            p['decayed_confidence'] = self.get_decayed_confidence(p)
+            if p['decayed_confidence'] >= DECAY_THRESHOLD:
+                result.append(p)
+        result.sort(key=lambda x: x['decayed_confidence'], reverse=True)
+        return result
+
+    # ========================================================================
+    # Confidence Adjustment on Fix Transitions
+    # ========================================================================
+
+    def boost_pattern_confidence(self, pattern_id: int, amount: float = 0.1):
+        """Boost a pattern's confidence (capped at 1.0) when a fix is verified."""
+        try:
+            cursor = self.db.execute("SELECT confidence FROM patterns WHERE id = ?", (pattern_id,))
+            row = cursor.fetchone()
+            if row:
+                new_conf = min(1.0, row['confidence'] + amount)
+                self.db.execute(
+                    "UPDATE patterns SET confidence = ?, last_activity_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (new_conf, pattern_id)
+                )
+                self.db.commit()
+        except Exception as e:
+            logger.warning(f"Failed to boost pattern {pattern_id}: {e}")
+
+    def decrease_pattern_confidence(self, pattern_id: int, amount: float = 0.05):
+        """Decrease a pattern's confidence when a fix fails or is reverted."""
+        try:
+            cursor = self.db.execute("SELECT confidence FROM patterns WHERE id = ?", (pattern_id,))
+            row = cursor.fetchone()
+            if row:
+                new_conf = max(0.0, row['confidence'] - amount)
+                self.db.execute(
+                    "UPDATE patterns SET confidence = ?, last_activity_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (new_conf, pattern_id)
+                )
+                self.db.commit()
+        except Exception as e:
+            logger.warning(f"Failed to decrease pattern {pattern_id}: {e}")
+
+    # ========================================================================
+    # Outcome Recording
+    # ========================================================================
+
     def record_outcome(self, fix_id: int, issue_id: int, resolved: bool, notes: str = "") -> int:
         """
         Record whether a fix worked. This is the primary learning signal.
-
-        Args:
-            fix_id: ID of the suggested fix
-            issue_id: ID of the issue
-            resolved: Whether the fix resolved the issue
-            notes: Optional user notes
-
-        Returns:
-            Outcome ID
         """
         from backend.database import FixOutcome
 
@@ -62,11 +135,12 @@ class LearningEngine:
         logger.info(f"Recorded outcome for fix {fix_id}: {'resolved' if resolved else 'not resolved'}")
         return outcome_id
 
+    # ========================================================================
+    # Pattern Detection
+    # ========================================================================
+
     def detect_patterns(self):
-        """
-        Analyze fix history to find patterns.
-        Called after each outcome recording.
-        """
+        """Analyze fix history to find patterns. Called after each outcome recording."""
         try:
             self._detect_fix_effectiveness()
             self._detect_recurring_issues()
@@ -74,18 +148,41 @@ class LearningEngine:
         except Exception as e:
             logger.error(f"Pattern detection failed: {e}")
 
-    def _detect_fix_effectiveness(self):
-        """
-        Track which types of fixes work best for which types of issues.
-        Example: "Service restart fixes 80% of print spooler issues"
-        """
+    def _get_hardware_config_hash(self) -> Optional[str]:
+        """Build a hash of the current hardware config for pattern correlation."""
         try:
+            cursor = self.db.execute("SELECT id FROM snapshots ORDER BY timestamp DESC LIMIT 1")
+            row = cursor.fetchone()
+            if not row:
+                return None
+            snapshot_id = row[0]
+            gpu = self.db.get_gpu_state(snapshot_id)
+            parts = []
+            if gpu:
+                parts.append(f"gpu:{gpu.get('gpu_name', '')}")
+                parts.append(f"driver:{gpu.get('driver_version', '')}")
+            # Add OS info if available
+            hw_states = self.db.get_hardware_states(snapshot_id)
+            for hw in hw_states:
+                if hw.get('component_type') == 'os':
+                    parts.append(f"os:{hw.get('component_data', '')[:50]}")
+            if parts:
+                return hashlib.md5('|'.join(parts).encode()).hexdigest()[:12]
+        except Exception:
+            pass
+        return None
+
+    def _detect_fix_effectiveness(self):
+        """Track which types of fixes work best for which types of issues."""
+        try:
+            hw_hash = self._get_hardware_config_hash()
             cursor = self.db.execute("""
                 SELECT
                     sf.action_type,
                     i.issue_type,
                     COUNT(*) as total_attempts,
                     SUM(CASE WHEN fo.resolved = 1 THEN 1 ELSE 0 END) as successful,
+                    SUM(CASE WHEN fo.resolved = 0 THEN 1 ELSE 0 END) as failed,
                     AVG(CASE WHEN fo.resolved = 1 THEN 1.0 ELSE 0.0 END) as success_rate
                 FROM fix_outcomes fo
                 JOIN suggested_fixes sf ON fo.fix_id = sf.id
@@ -104,7 +201,13 @@ class LearningEngine:
                         f"({row_dict['total_attempts']} attempts)"
                     )
 
-                    # Check if pattern already exists
+                    evidence = {
+                        "action_type": row_dict['action_type'],
+                        "issue_type": row_dict['issue_type'],
+                    }
+                    if hw_hash:
+                        evidence["hardware_config_hash"] = hw_hash
+
                     existing = self.db.execute(
                         "SELECT id FROM patterns WHERE pattern_type = 'fix_effectiveness' "
                         "AND description LIKE ?",
@@ -114,22 +217,21 @@ class LearningEngine:
                     if existing:
                         self.db.execute(
                             """UPDATE patterns SET description = ?, confidence = ?,
-                               times_seen = ?, last_seen = CURRENT_TIMESTAMP
+                               times_seen = ?, times_failed = ?,
+                               last_seen = CURRENT_TIMESTAMP, last_activity_at = CURRENT_TIMESTAMP
                                WHERE id = ?""",
                             (description, row_dict['success_rate'],
-                             row_dict['total_attempts'], existing['id'])
+                             row_dict['successful'], row_dict['failed'], existing['id'])
                         )
                     else:
                         from backend.database import Pattern
                         self.db.create_pattern(Pattern(
                             pattern_type="fix_effectiveness",
                             description=description,
-                            evidence=json.dumps({
-                                "action_type": row_dict['action_type'],
-                                "issue_type": row_dict['issue_type']
-                            }),
+                            evidence=json.dumps(evidence),
                             confidence=row_dict['success_rate'],
-                            times_seen=row_dict['total_attempts']
+                            times_seen=row_dict['successful'],
+                            times_failed=row_dict['failed'],
                         ))
 
             self.db.commit()
@@ -138,10 +240,7 @@ class LearningEngine:
             logger.warning(f"Fix effectiveness detection failed: {e}")
 
     def _detect_recurring_issues(self):
-        """
-        Find issue types that keep happening.
-        Example: "monitor_blackout has occurred 5 times in the last 30 days"
-        """
+        """Find issue types that keep happening."""
         try:
             cursor = self.db.execute("""
                 SELECT issue_type, COUNT(*) as count
@@ -167,7 +266,7 @@ class LearningEngine:
                 if existing:
                     self.db.execute(
                         """UPDATE patterns SET description = ?, times_seen = ?,
-                           last_seen = CURRENT_TIMESTAMP WHERE id = ?""",
+                           last_seen = CURRENT_TIMESTAMP, last_activity_at = CURRENT_TIMESTAMP WHERE id = ?""",
                         (description, row_dict['count'], existing['id'])
                     )
                 else:
@@ -186,17 +285,14 @@ class LearningEngine:
             logger.warning(f"Recurring issue detection failed: {e}")
 
     def _detect_change_triggers(self):
-        """
-        Correlate system changes with subsequent issues.
-        Example: "Issues tend to appear within 48h of NVIDIA driver updates"
-        """
+        """Correlate system changes with subsequent issues."""
         try:
-            # Find reliability records (installs/updates) that happened before issues
             cursor = self.db.execute("""
                 SELECT
                     r.source_name,
                     r.record_type,
                     r.product_name,
+                    r.event_message,
                     COUNT(DISTINCT i.id) as issue_count
                 FROM reliability_records r
                 JOIN issues i ON
@@ -209,10 +305,19 @@ class LearningEngine:
 
             for row in cursor.fetchall():
                 row_dict = dict(row)
+                # Include the specific trigger event detail
+                trigger_detail = row_dict.get('event_message', '') or row_dict.get('product_name', '')
                 description = (
                     f"'{row_dict['source_name']}' changes ({row_dict['record_type']}) "
                     f"have preceded {row_dict['issue_count']} issues within 72 hours"
                 )
+
+                evidence = {
+                    "source": row_dict['source_name'],
+                    "record_type": row_dict['record_type'],
+                }
+                if trigger_detail:
+                    evidence["trigger_detail"] = trigger_detail[:200]
 
                 existing = self.db.execute(
                     "SELECT id FROM patterns WHERE pattern_type = 'change_trigger' "
@@ -223,18 +328,16 @@ class LearningEngine:
                 if existing:
                     self.db.execute(
                         """UPDATE patterns SET description = ?, times_seen = ?,
-                           last_seen = CURRENT_TIMESTAMP WHERE id = ?""",
-                        (description, row_dict['issue_count'], existing['id'])
+                           evidence = ?,
+                           last_seen = CURRENT_TIMESTAMP, last_activity_at = CURRENT_TIMESTAMP WHERE id = ?""",
+                        (description, row_dict['issue_count'], json.dumps(evidence), existing['id'])
                     )
                 else:
                     from backend.database import Pattern
                     self.db.create_pattern(Pattern(
                         pattern_type="change_trigger",
                         description=description,
-                        evidence=json.dumps({
-                            "source": row_dict['source_name'],
-                            "record_type": row_dict['record_type']
-                        }),
+                        evidence=json.dumps(evidence),
                         confidence=min(row_dict['issue_count'] / 5.0, 1.0),
                         times_seen=row_dict['issue_count']
                     ))
@@ -244,20 +347,20 @@ class LearningEngine:
         except Exception as e:
             logger.warning(f"Change trigger detection failed: {e}")
 
-    def get_recommendations(self) -> List[Dict[str, Any]]:
-        """
-        Generate preventive recommendations based on learned patterns.
+    # ========================================================================
+    # Recommendations (with decay)
+    # ========================================================================
 
-        Returns:
-            List of recommendation dicts
-        """
+    def get_recommendations(self) -> List[Dict[str, Any]]:
+        """Generate preventive recommendations using decayed confidence."""
         recommendations = []
 
         try:
-            patterns = self.db.get_active_patterns()
+            patterns = self.get_active_patterns_decayed()
 
             for pattern in patterns:
-                if pattern['confidence'] < 0.3:
+                decayed = pattern['decayed_confidence']
+                if decayed < 0.3:
                     continue
 
                 rec = {
@@ -265,24 +368,23 @@ class LearningEngine:
                     "type": pattern['pattern_type'],
                     "description": pattern['description'],
                     "confidence": pattern['confidence'],
+                    "decayed_confidence": decayed,
                     "times_seen": pattern['times_seen'],
+                    "times_failed": pattern.get('times_failed', 0),
                 }
 
-                # Add specific advice based on pattern type
                 if pattern['pattern_type'] == 'change_trigger':
                     rec["advice"] = (
                         "Consider creating a system restore point before "
                         "performing this type of change."
                     )
-                    rec["priority"] = "high" if pattern['confidence'] > 0.6 else "medium"
-
+                    rec["priority"] = "high" if decayed > 0.6 else "medium"
                 elif pattern['pattern_type'] == 'recurring_issue':
                     rec["advice"] = (
                         "This issue keeps happening. Consider investigating "
                         "the root cause rather than applying quick fixes."
                     )
                     rec["priority"] = "high"
-
                 elif pattern['pattern_type'] == 'fix_effectiveness':
                     rec["advice"] = (
                         "This fix type has a track record for this issue type. "
@@ -292,7 +394,7 @@ class LearningEngine:
 
                 recommendations.append(rec)
 
-            # Add stability-based recommendations
+            # Stability-based recommendations
             try:
                 stability = self.db.execute(
                     """SELECT stability_index FROM reliability_records
@@ -312,6 +414,7 @@ class LearningEngine:
                         ),
                         "priority": "high",
                         "confidence": 1.0,
+                        "decayed_confidence": 1.0,
                     })
             except Exception:
                 pass

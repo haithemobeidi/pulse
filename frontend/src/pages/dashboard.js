@@ -1,5 +1,6 @@
 import * as api from '../api/client.js';
 import { showLoading, formatDate, formatTimeShort } from '../main.js';
+import { escapeHtml, formatType, API_BASE } from '../utils.js';
 
 let historyClicksSetup = false;
 const historyLoaded = { gpu: false, monitors: false };
@@ -42,7 +43,7 @@ function startLiveStats() {
 
 async function updateLiveStats() {
   try {
-    const resp = await fetch('http://localhost:5000/api/live-stats');
+    const resp = await fetch(`${API_BASE}/api/live-stats`);
     const stats = await resp.json();
 
     // Helper to update a data-live element
@@ -465,7 +466,7 @@ async function loadRecentIssues() {
     issues.forEach((issue) => {
       html += `
         <div class="issue-item severity-${issue.severity}">
-          <div class="issue-type">${formatIssueType(issue.issue_type)}</div>
+          <div class="issue-type">${formatType(issue.issue_type)}</div>
           <div class="issue-description">${escapeHtml(issue.description).substring(0, 100)}${issue.description.length > 100 ? '...' : ''}</div>
           <div class="issue-meta">
             <span>${formatTimeShort(issue.timestamp)}</span>
@@ -481,12 +482,4 @@ async function loadRecentIssues() {
   }
 }
 
-function formatIssueType(type) {
-  return type.split('_').map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
-}
-
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text || '';
-  return div.innerHTML;
-}
+// formatType uses shared formatType from utils

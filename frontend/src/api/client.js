@@ -2,10 +2,10 @@
  * API Client for PC-Inspector Backend
  */
 
-const API_BASE_URL = 'http://localhost:5000';
+import { API_BASE } from '../utils.js';
 
 async function request(path, options = {}) {
-  const url = `${API_BASE_URL}${path}`;
+  const url = `${API_BASE}${path}`;
 
   const fetchOptions = {
     ...options,
@@ -54,25 +54,9 @@ export async function post(path, body) {
   return request(path, { method: 'POST', body });
 }
 
-export async function put(path, body) {
-  return request(path, { method: 'PUT', body });
-}
-
-export async function deleteRequest(path) {
-  return request(path, { method: 'DELETE' });
-}
-
 // Snapshots
 export function getSnapshots(limit = 50, offset = 0) {
   return get('/api/snapshots', { limit, offset });
-}
-
-export function getSnapshot(id) {
-  return get(`/api/snapshots/${id}`);
-}
-
-export function createSnapshot(snapshot_type, notes) {
-  return post('/api/snapshots', { snapshot_type, notes });
 }
 
 // Hardware
@@ -80,16 +64,8 @@ export function getCurrentHardware() {
   return get('/api/hardware/current');
 }
 
-export function getGPUStatus() {
-  return get('/api/hardware/gpu');
-}
-
 export function getGPUHistory(limit = 20) {
   return get('/api/hardware/gpu/history', { limit });
-}
-
-export function getMonitorStatus() {
-  return get('/api/hardware/monitors');
 }
 
 export function getMonitorHistory(limit = 20) {
@@ -99,10 +75,6 @@ export function getMonitorHistory(limit = 20) {
 // Issues
 export function getIssues(limit = 50, offset = 0) {
   return get('/api/issues', { limit, offset });
-}
-
-export function getIssue(id) {
-  return get(`/api/issues/${id}`);
 }
 
 export function getIssuesByType(type, limit = 20) {
@@ -123,15 +95,6 @@ export function collectAll() {
   return post('/api/collect/all');
 }
 
-export function collectHardware() {
-  return post('/api/collect/hardware');
-}
-
 export function collectMonitors() {
   return post('/api/collect/monitors');
-}
-
-// Status
-export function getAPIStatus() {
-  return get('/api/status');
 }

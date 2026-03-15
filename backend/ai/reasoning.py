@@ -114,6 +114,7 @@ def build_context(db, issue_description: str) -> Dict[str, Any]:
         "reliability": {},
         "recent_issues": [],
         "learned_patterns": [],
+        "similar_past_fixes": [],
     }
 
     try:
@@ -167,17 +168,37 @@ def build_context(db, issue_description: str) -> Dict[str, Any]:
         except Exception as e:
             logger.warning(f"Could not get recent issues: {e}")
 
-        # Get learned patterns
+        # Get learned patterns with decayed confidence
         try:
-            patterns = db.get_active_patterns()
+            from backend.ai.learning import LearningEngine
+            learning = LearningEngine(db)
+            patterns = learning.get_active_patterns_decayed()
             if patterns:
                 context["learned_patterns"] = [
                     {"type": p["pattern_type"], "description": p["description"],
-                     "confidence": p["confidence"], "times_seen": p["times_seen"]}
-                    for p in patterns if p["confidence"] > 0.3
+                     "confidence": p["confidence"], "decayed_confidence": p["decayed_confidence"],
+                     "times_seen": p["times_seen"], "times_failed": p.get("times_failed", 0)}
+                    for p in patterns[:10]  # Top 10 by decayed confidence
                 ]
         except Exception as e:
             logger.warning(f"Could not get patterns: {e}")
+
+        # Get similar past fixes via embeddings
+        try:
+            from backend.services.matching import find_similar_fixes
+            similar = find_similar_fixes(db, issue_description, limit=3)
+            if similar:
+                context["similar_past_fixes"] = similar
+        except Exception as e:
+            logger.warning(f"Could not get similar fixes: {e}")
+
+        # Get active style guide
+        try:
+            guide = db.get_style_guide('diagnosis')
+            if guide:
+                context["style_guide"] = guide['guide']
+        except Exception as e:
+            logger.warning(f"Could not get style guide: {e}")
 
     except Exception as e:
         logger.error(f"Error building context: {e}")
@@ -334,6 +355,33 @@ def analyze_issue(
             for i in recent[:5]
         )
 
+    # Similar past fixes section
+    similar_fixes_summary = ""
+    similar = context.get('similar_past_fixes', [])
+    if similar:
+        similar_fixes_summary = '\n'.join(
+            f"- {f['title']} (success rate: {int(f['success_rate']*100)}%, "
+            f"similarity: {int(f['similarity']*100)}%, "
+            f"confidence: {int(f['pattern_confidence']*100)}%): {f['description'][:150]}"
+            for f in similar[:3]
+        )
+
+    # Learned patterns section
+    patterns_summary = ""
+    learned = context.get('learned_patterns', [])
+    if learned:
+        patterns_summary = '\n'.join(
+            f"- [{p['type']}] {p['description']} "
+            f"(confidence: {int(p.get('decayed_confidence', p['confidence'])*100)}%, "
+            f"seen {p['times_seen']}x)"
+            for p in learned[:5]
+        )
+
+    # Style guide injection
+    style_instruction = ""
+    if context.get('style_guide'):
+        style_instruction = f"\n\nSTYLE GUIDELINES (follow these when writing your response):\n{context['style_guide']}"
+
     user_message = f"""USER'S PROBLEM (this is what you should focus on):
 {issue_description}
 
@@ -345,6 +393,12 @@ RECENT SYSTEM EVENTS (use as supporting evidence only — do NOT diagnose these 
 
 RECENT ISSUES REPORTED BY USER:
 {issues_summary if issues_summary else 'No recent issues'}
+
+SIMILAR PAST FIXES (fixes that worked for similar problems — reference these if relevant):
+{similar_fixes_summary if similar_fixes_summary else 'No similar past fixes yet'}
+
+LEARNED PATTERNS (confidence-weighted insights from past diagnoses):
+{patterns_summary if patterns_summary else 'No patterns learned yet'}{style_instruction}
 
 Remember: Focus on what the user described. The system data is context, not the problem. Respond ONLY with valid JSON."""
 

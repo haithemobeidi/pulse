@@ -1,5 +1,6 @@
 import * as api from '../api/client.js';
 import { showLoading, formatDate } from '../main.js';
+import { escapeHtml, formatType } from '../utils.js';
 
 export async function initIssues() {
   console.log('Loading issues...');
@@ -20,7 +21,7 @@ export async function initIssues() {
     issues.forEach((issue) => {
       html += `
         <div class="issue-item severity-${issue.severity}">
-          <div class="issue-type">${formatIssueType(issue.issue_type)}</div>
+          <div class="issue-type">${formatType(issue.issue_type)}</div>
           <div class="issue-description">${escapeHtml(issue.description)}</div>
           <div class="issue-meta">
             <span>${formatDate(issue.timestamp)}</span>
@@ -34,14 +35,4 @@ export async function initIssues() {
   } catch (error) {
     container.innerHTML = `<p class="error">Failed to load issues: ${error}</p>`;
   }
-}
-
-function formatIssueType(type) {
-  return type.split('_').map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
-}
-
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
 }
