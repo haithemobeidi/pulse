@@ -39,6 +39,10 @@ if not logger.handlers:
 collector_logger = logging.getLogger('backend.collectors')
 collector_logger.setLevel(logging.INFO)
 
+# Server start time (used by frontend to detect restarts)
+import time as _time
+SERVER_START_TIME = str(int(_time.time()))
+
 # Calculate absolute path to frontend directory
 PROJECT_ROOT = Path(__file__).parent.parent
 FRONTEND_DIR = str(PROJECT_ROOT / 'frontend')
@@ -95,7 +99,8 @@ def status():
             'status': 'ok',
             'database': 'connected',
             'snapshots': snapshot_count,
-            'issues': issue_count
+            'issues': issue_count,
+            'server_start': SERVER_START_TIME
         })
     except Exception as e:
         return jsonify({'status': 'error', 'error': str(e)}), 500

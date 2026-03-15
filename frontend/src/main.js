@@ -607,20 +607,39 @@ document.addEventListener('DOMContentLoaded', init);
 
 // Auto-reload when server restarts
 (function serverHeartbeat() {
+  let serverStartTime = null;
   let wasDown = false;
-  setInterval(async () => {
+
+  async function check() {
     try {
-      const resp = await fetch('/api/status', { signal: AbortSignal.timeout(3000) });
-      if (resp.ok && wasDown) {
-        console.log('[Pulse] Server is back — reloading page');
+      const resp = await fetch('/api/status');
+      if (!resp.ok) throw new Error('not ok');
+      const data = await resp.json();
+
+      if (wasDown) {
+        // Server came back from being down
+        console.log('[Pulse] Server is back — reloading');
         location.reload();
+        return;
       }
+
+      // Track server start time to detect restarts
+      const newStart = data.server_start;
+      if (newStart && serverStartTime && newStart !== serverStartTime) {
+        console.log('[Pulse] Server restarted — reloading');
+        location.reload();
+        return;
+      }
+      serverStartTime = newStart;
       wasDown = false;
     } catch {
-      if (!wasDown) console.log('[Pulse] Server connection lost — waiting for restart...');
+      if (!wasDown) console.log('[Pulse] Server connection lost...');
       wasDown = true;
     }
-  }, 3000);
+  }
+
+  // Start checking after 5s (let page load first)
+  setTimeout(() => setInterval(check, 3000), 5000);
 })();
 
 export { api };
