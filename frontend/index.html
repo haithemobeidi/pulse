@@ -22,77 +22,49 @@
 
         <!-- Troubleshoot Page -->
         <section id="troubleshoot" class="page active">
-            <h2>What's wrong with your PC?</h2>
-
-            <div class="card" id="system-scan-status">
+            <!-- Status bar -->
+            <div class="chat-header">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
                     <div>
                         <span id="scan-indicator" style="color:var(--text-secondary);">Checking system status...</span>
                     </div>
-                    <div id="provider-badges" class="provider-badges"></div>
+                    <div style="display:flex;align-items:center;gap:12px;">
+                        <div id="provider-badges" class="provider-badges"></div>
+                        <select id="provider-select" style="padding:4px 8px;border-radius:4px;background:#1e1e2e;color:#cdd6f4;border:1px solid #444;font-size:12px;">
+                            <option value="ollama">Ollama</option>
+                            <option value="gemini">Gemini</option>
+                            <option value="claude">Claude</option>
+                            <option value="auto">Auto</option>
+                        </select>
+                        <button id="new-chat-btn" class="btn btn-secondary" style="padding:4px 12px;font-size:12px;">New Chat</button>
+                    </div>
                 </div>
             </div>
 
-            <div class="card">
-                <div class="form-group">
-                    <textarea id="problem-input" rows="4" placeholder="Describe your problem... e.g. 'My screen goes black randomly' or 'PC is running slow' or 'Games keep crashing'" style="width:100%;font-size:16px;padding:12px;border-radius:8px;border:1px solid #444;background:#1e1e2e;color:#cdd6f4;resize:vertical;"></textarea>
+            <!-- Chat Messages -->
+            <div id="chat-messages" class="chat-messages">
+                <div class="chat-welcome">
+                    <h2>What's wrong with your PC?</h2>
+                    <p style="color:var(--text-secondary);">Describe your problem below. I'll scan your system and help diagnose it.</p>
                 </div>
+            </div>
+
+            <!-- Chat Input -->
+            <div class="chat-input-area">
                 <!-- Screenshot attach -->
-                <div id="screenshot-area" class="screenshot-area">
-                    <div id="screenshot-preview" class="screenshot-preview" style="display:none;">
+                <div id="screenshot-area" class="screenshot-area" style="display:none;">
+                    <div id="screenshot-preview" class="screenshot-preview">
                         <img id="screenshot-img" src="" alt="Screenshot">
                         <button id="screenshot-remove" class="screenshot-remove" title="Remove">&times;</button>
                     </div>
-                    <label id="screenshot-label" class="screenshot-label">
+                </div>
+                <div class="chat-input-row">
+                    <label id="screenshot-label" class="screenshot-attach-btn" title="Attach screenshot (or Ctrl+V)">
                         <input type="file" id="screenshot-file" accept="image/*" style="display:none;">
-                        <span>Attach screenshot (or paste with Ctrl+V)</span>
+                        <span style="font-size:18px;">&#128247;</span>
                     </label>
-                </div>
-
-                <div class="form-group" style="display:flex;gap:10px;align-items:center;">
-                    <label style="color:#a6adc8;">AI Provider:</label>
-                    <select id="provider-select" style="padding:8px 12px;border-radius:6px;background:#1e1e2e;color:#cdd6f4;border:1px solid #444;">
-                        <option value="ollama">Ollama (local)</option>
-                        <option value="gemini">Gemini (Google)</option>
-                        <option value="claude">Claude (Anthropic)</option>
-                        <option value="auto">Auto (any available)</option>
-                    </select>
-                    <button id="analyze-btn" class="btn btn-primary" style="padding:10px 24px;font-size:16px;">Analyze</button>
-                </div>
-            </div>
-
-            <!-- Scanning Progress (shown only when Analyze is clicked) -->
-            <div id="scan-progress" class="card" style="display:none;">
-                <h3>Scanning your system...</h3>
-                <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
-                <p id="scan-status" style="color:#a6adc8;margin-top:8px;">Collecting hardware data...</p>
-            </div>
-
-            <!-- AI Analysis Results -->
-            <div id="analysis-results" class="hidden">
-                <div class="card" id="diagnosis-card">
-                    <div style="display:flex;justify-content:space-between;align-items:center;">
-                        <h3>Diagnosis</h3>
-                        <span id="confidence-badge" class="severity-badge"></span>
-                    </div>
-                    <p id="diagnosis-text" style="font-size:15px;line-height:1.6;"></p>
-                    <p id="root-cause" style="color:#a6adc8;margin-top:8px;"></p>
-                    <p id="provider-used" style="color:#585b70;font-size:12px;margin-top:8px;"></p>
-                </div>
-
-                <!-- Suggested Fixes -->
-                <div id="fixes-list"></div>
-
-                <!-- Questions from AI -->
-                <div id="ai-questions" class="card hidden">
-                    <h3>Clarifying Questions</h3>
-                    <ul id="questions-list" style="color:#cdd6f4;"></ul>
-                </div>
-
-                <!-- Preventive Tips -->
-                <div id="preventive-card" class="card hidden">
-                    <h3>Prevention Tips</h3>
-                    <p id="preventive-text" style="color:#a6adc8;"></p>
+                    <textarea id="problem-input" rows="1" placeholder="Describe your problem or ask a follow-up..." class="chat-textarea"></textarea>
+                    <button id="analyze-btn" class="btn btn-primary chat-send-btn">Send</button>
                 </div>
             </div>
         </section>

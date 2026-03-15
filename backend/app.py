@@ -16,6 +16,7 @@ from backend.collectors.hardware import HardwareCollector
 from backend.collectors.monitors import MonitorCollector
 from backend.collectors.reliability import ReliabilityCollector
 from backend.ai.reasoning import analyze_issue as ai_analyze, has_any_provider, get_provider_status
+from backend.ai.providers import chat_with_failover
 from backend.ai.learning import LearningEngine
 from backend.database import AiAnalysis, SuggestedFix, FixOutcome
 
@@ -572,6 +573,86 @@ def analyze():
 
     except Exception as e:
         logger.error(f"AI analysis endpoint error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
+# Chat Follow-up Endpoint
+# ============================================================================
+
+CHAT_SYSTEM_PROMPT = """You are Pulse, a Windows PC troubleshooting assistant having a conversation with a user about their PC problems.
+
+You have context from a previous diagnosis. The user is now asking follow-up questions or providing more details. Respond naturally and helpfully.
+
+RULES:
+1. Focus on what the user is asking in their latest message.
+2. Reference the conversation history to stay consistent.
+3. If they provide new information, refine your diagnosis.
+4. Be conversational — not overly formal or technical.
+5. If suggesting commands or steps, be specific and exact.
+6. Keep responses concise but thorough.
+
+Respond in plain text (not JSON). Use markdown formatting for readability."""
+
+
+@app.route('/api/ai/chat', methods=['POST'])
+def chat_followup():
+    """Follow-up chat message — sends conversation history to AI with system context"""
+    try:
+        data = request.get_json()
+        messages = data.get('messages', [])
+        provider = data.get('provider', 'ollama')
+
+        if not messages:
+            return jsonify({'error': 'No messages provided'}), 400
+
+        # Build system context from current hardware data
+        system_context = ""
+        try:
+            from backend.ai.reasoning import build_context
+            context = build_context(db, messages[-1].get('content', ''))
+            hw = context.get('hardware', {})
+            gpu = hw.get('gpu', {})
+            cpu_data = hw.get('cpu', {}).get('component_data', {})
+            mem_data = hw.get('memory', {}).get('component_data', {})
+
+            parts = []
+            if gpu:
+                parts.append(f"GPU: {gpu.get('gpu_name', '?')} (Driver: {gpu.get('driver_version', '?')})")
+            if isinstance(cpu_data, str):
+                import json as _json
+                try: cpu_data = _json.loads(cpu_data)
+                except: cpu_data = {}
+            if isinstance(cpu_data, dict) and cpu_data.get('name'):
+                parts.append(f"CPU: {cpu_data['name']}")
+            if isinstance(mem_data, str):
+                try: mem_data = _json.loads(mem_data)
+                except: mem_data = {}
+            if isinstance(mem_data, dict) and mem_data.get('total_gb'):
+                parts.append(f"RAM: {mem_data['total_gb']}GB {mem_data.get('memory_type', '')}")
+
+            if parts:
+                system_context = "\n\nUser's system: " + " | ".join(parts)
+        except Exception as e:
+            logger.warning(f"Could not build chat context: {e}")
+
+        prompt = CHAT_SYSTEM_PROMPT + system_context
+
+        result = chat_with_failover(
+            system_prompt=prompt,
+            user_message=messages[-1].get('content', ''),
+            preferred_provider=provider,
+            messages=messages,
+        )
+
+        return jsonify({
+            'response': result.get('content', ''),
+            'provider': result.get('provider', 'unknown'),
+            'model': result.get('model', 'unknown'),
+        })
+
+    except Exception as e:
+        logger.error(f"Chat follow-up error: {e}")
         return jsonify({'error': str(e)}), 500
 
 

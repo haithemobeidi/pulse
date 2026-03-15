@@ -4,15 +4,15 @@
 
 | File | Purpose | Status |
 |------|---------|--------|
-| `backend/app.py` | Flask server - API + static files, all route definitions (~25 routes). Parallel collectors. | Active |
+| `backend/app.py` | Flask server - API routes (~27), parallel collectors, chat endpoint, screenshot save, auto-collect on startup | Active |
 | `backend/database.py` | SQLite schema (13 tables), models, CRUD operations | Active |
 | `backend/collectors/base.py` | Base collector class (abstract) | Active |
 | `backend/collectors/hardware.py` | GPU, CPU, Memory, Motherboard, Storage, Network collectors (WMI + psutil) | Active |
 | `backend/collectors/monitors.py` | Monitor detection via EDID/WmiMonitorID | Active |
 | `backend/collectors/reliability.py` | Windows Reliability Monitor (Win32_ReliabilityRecords) | Active |
 | `backend/ai/__init__.py` | AI module init | Active |
-| `backend/ai/providers.py` | Multi-provider AI (Ollama/Gemini/Claude) with auto-failover | Active |
-| `backend/ai/reasoning.py` | AI reasoning engine - builds context, calls providers, parses diagnosis | Active |
+| `backend/ai/providers.py` | Multi-provider AI (Ollama/Gemini/Claude) with auto-failover + conversation history support | Active |
+| `backend/ai/reasoning.py` | AI reasoning engine - context building, image description routing, prompt management | Active |
 | `backend/ai/learning.py` | Learning engine - pattern detection, fix effectiveness, recommendations | Active |
 | `backend/utils/powershell.py` | PowerShell bridge for WSL→Windows queries | Active |
 
@@ -20,19 +20,13 @@
 
 | File | Purpose | Status |
 |------|---------|--------|
-| `frontend/index.html` | HTML entry - Troubleshoot, Dashboard, Issues, Timeline (4 pages) | Active |
-| `frontend/style.css` | Dark theme styling with hw tables, progress bars, clickable cards | Active |
-| `frontend/src/main.js` | Main app logic - navigation, troubleshoot flow, data collection UI | Active |
+| `frontend/index.html` | HTML entry - Chat UI, Dashboard, Issues, Timeline (4 pages) | Active |
+| `frontend/style.css` | Dark theme styling - chat bubbles, hw tables, health bar, dashboard grid | Active |
+| `frontend/src/main.js` | Main app logic - chat, navigation, screenshot, data collection (624 lines, needs refactor) | Active |
 | `frontend/src/api/client.js` | API client (port 5000) - all endpoint wrappers | Active |
-| `frontend/src/pages/dashboard.js` | Dashboard - GPU, CPU, Memory, Monitors, Motherboard, Storage, Network cards with click-to-expand history | Active |
+| `frontend/src/pages/dashboard.js` | Dashboard - 7 hw cards, health summary, live stats polling, click-to-expand history | Active |
 | `frontend/src/pages/issues.js` | Issues list page | Active |
-| `frontend/src/pages/timeline.js` | Timeline - reliability records (driver updates, installs, crashes) | Active |
-| `frontend/src/pages/hardware.js` | Legacy hardware history page (superseded by Dashboard inline history) | Deprecated |
-| `frontend/src/api/client.ts` | TypeScript API client (legacy, .js version is active) | Deprecated |
-| `frontend/src/pages/dashboard.ts` | TypeScript dashboard (legacy, .js version is active) | Deprecated |
-| `frontend/src/pages/issues.ts` | TypeScript issues (legacy) | Deprecated |
-| `frontend/src/pages/timeline.ts` | TypeScript timeline (legacy) | Deprecated |
-| `frontend/src/pages/hardware.ts` | TypeScript hardware (legacy) | Deprecated |
+| `frontend/src/pages/timeline.js` | Timeline - reliability records (driver updates, installs, crashes) with icons | Active |
 
 ## Launcher / Manager Files
 
@@ -129,4 +123,4 @@ SQLite (data/system.db) - 13 tables
 - **User Hardware**: RTX 5090 (32GB), Ryzen 9 9950X3D, 96GB DDR5-6000 Corsair, AM5, AW3425DW + LG ULTRAGEAR
 
 ## Last Updated
-2026-03-14
+2026-03-14 (late evening)

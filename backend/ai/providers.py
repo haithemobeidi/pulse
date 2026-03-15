@@ -135,20 +135,26 @@ class OllamaProvider:
         return available[0]
 
     @staticmethod
-    def chat(system_prompt: str, user_message: str, model: str = None) -> Dict[str, Any]:
+    def chat(system_prompt: str, user_message: str, model: str = None, messages: list = None) -> Dict[str, Any]:
         if not model:
             model = OllamaProvider.get_best_model()
             if not model:
                 raise RuntimeError("No Ollama models installed")
 
+        # Build messages list — either from conversation history or single message
+        if messages:
+            chat_messages = [{"role": "system", "content": system_prompt}] + messages
+        else:
+            chat_messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ]
+
         response = requests.post(
             f"{OLLAMA_URL}/api/chat",
             json={
                 "model": model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message},
-                ],
+                "messages": chat_messages,
                 "stream": False,
                 "options": {
                     "temperature": 0.3,
@@ -187,6 +193,7 @@ class GeminiProvider:
         system_prompt: str,
         user_message: str,
         image_path: Optional[str] = None,
+        messages: list = None,
     ) -> Dict[str, Any]:
         api_key = _get_key("GEMINI_API_KEY")
         if not api_key:
@@ -194,38 +201,48 @@ class GeminiProvider:
 
         model = "gemini-2.5-flash"
 
-        parts = []
+        # Build contents from conversation history or single message
+        if messages:
+            contents = []
+            for msg in messages:
+                role = "user" if msg["role"] == "user" else "model"
+                contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+        else:
+            parts = []
+            # Add image if provided (Gemini supports vision)
+            if image_path and Path(image_path).exists():
+                try:
+                    with open(image_path, "rb") as f:
+                        img_data = base64.b64encode(f.read()).decode("utf-8")
+                    ext = Path(image_path).suffix.lower()
+                    mime = {
+                        ".png": "image/png",
+                        ".jpg": "image/jpeg",
+                        ".jpeg": "image/jpeg",
+                        ".gif": "image/gif",
+                        ".webp": "image/webp",
+                    }.get(ext, "image/png")
+                    parts.append({"inline_data": {"mime_type": mime, "data": img_data}})
+                except Exception as e:
+                    logger.warning(f"Could not load image for Gemini: {e}")
+            parts.append({"text": user_message})
+            contents = [{"parts": parts}]
 
-        # Add image if provided (Gemini supports vision)
-        if image_path and Path(image_path).exists():
-            try:
-                with open(image_path, "rb") as f:
-                    img_data = base64.b64encode(f.read()).decode("utf-8")
-                ext = Path(image_path).suffix.lower()
-                mime = {
-                    ".png": "image/png",
-                    ".jpg": "image/jpeg",
-                    ".jpeg": "image/jpeg",
-                    ".gif": "image/gif",
-                    ".webp": "image/webp",
-                }.get(ext, "image/png")
-                parts.append({"inline_data": {"mime_type": mime, "data": img_data}})
-            except Exception as e:
-                logger.warning(f"Could not load image for Gemini: {e}")
-
-        parts.append({"text": user_message})
+        # For follow-up messages, don't force JSON response
+        gen_config = {
+            "temperature": 0.3,
+            "maxOutputTokens": 4096,
+        }
+        if not messages:
+            gen_config["responseMimeType"] = "application/json"
 
         response = requests.post(
             f"{GEMINI_API_URL}/{model}:generateContent",
             params={"key": api_key},
             json={
                 "system_instruction": {"parts": [{"text": system_prompt}]},
-                "contents": [{"parts": parts}],
-                "generationConfig": {
-                    "temperature": 0.3,
-                    "maxOutputTokens": 4096,
-                    "responseMimeType": "application/json",
-                },
+                "contents": contents,
+                "generationConfig": gen_config,
             },
             timeout=60,
         )
@@ -266,34 +283,43 @@ class ClaudeProvider:
         system_prompt: str,
         user_message: str,
         image_path: Optional[str] = None,
+        messages: list = None,
     ) -> Dict[str, Any]:
         api_key = _get_key("ANTHROPIC_API_KEY")
         if not api_key:
             raise RuntimeError("ANTHROPIC_API_KEY not configured")
 
-        content_blocks = []
-
-        # Add image if provided (Claude supports vision)
-        if image_path and Path(image_path).exists():
-            try:
-                with open(image_path, "rb") as f:
-                    img_data = base64.b64encode(f.read()).decode("utf-8")
-                ext = Path(image_path).suffix.lower()
-                media_type = {
-                    ".png": "image/png",
-                    ".jpg": "image/jpeg",
-                    ".jpeg": "image/jpeg",
-                    ".gif": "image/gif",
-                    ".webp": "image/webp",
-                }.get(ext, "image/png")
-                content_blocks.append({
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": media_type, "data": img_data},
+        # Build messages from conversation history or single message
+        if messages:
+            api_messages = []
+            for msg in messages:
+                api_messages.append({
+                    "role": msg["role"],
+                    "content": msg["content"]
                 })
-            except Exception as e:
-                logger.warning(f"Could not load image for Claude: {e}")
-
-        content_blocks.append({"type": "text", "text": user_message})
+        else:
+            content_blocks = []
+            # Add image if provided (Claude supports vision)
+            if image_path and Path(image_path).exists():
+                try:
+                    with open(image_path, "rb") as f:
+                        img_data = base64.b64encode(f.read()).decode("utf-8")
+                    ext = Path(image_path).suffix.lower()
+                    media_type = {
+                        ".png": "image/png",
+                        ".jpg": "image/jpeg",
+                        ".jpeg": "image/jpeg",
+                        ".gif": "image/gif",
+                        ".webp": "image/webp",
+                    }.get(ext, "image/png")
+                    content_blocks.append({
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": media_type, "data": img_data},
+                    })
+                except Exception as e:
+                    logger.warning(f"Could not load image for Claude: {e}")
+            content_blocks.append({"type": "text", "text": user_message})
+            api_messages = [{"role": "user", "content": content_blocks}]
 
         response = requests.post(
             ANTHROPIC_API_URL,
@@ -306,7 +332,7 @@ class ClaudeProvider:
                 "model": "claude-sonnet-4-20250514",
                 "max_tokens": 4096,
                 "system": system_prompt,
-                "messages": [{"role": "user", "content": content_blocks}],
+                "messages": api_messages,
             },
             timeout=60,
         )
@@ -350,6 +376,7 @@ def chat_with_failover(
     preferred_provider: str = "auto",
     image_path: Optional[str] = None,
     issue_description: str = "",
+    messages: list = None,
 ) -> Dict[str, Any]:
     """
     Send a chat request with automatic failover between providers.
@@ -376,11 +403,11 @@ def chat_with_failover(
         # Use specific provider
         try:
             if preferred_provider == "ollama":
-                return OllamaProvider.chat(system_prompt, user_message)
+                return OllamaProvider.chat(system_prompt, user_message, messages=messages)
             elif preferred_provider == "gemini":
-                return GeminiProvider.chat(system_prompt, user_message, image_path)
+                return GeminiProvider.chat(system_prompt, user_message, image_path, messages=messages)
             elif preferred_provider == "claude":
-                return ClaudeProvider.chat(system_prompt, user_message, image_path)
+                return ClaudeProvider.chat(system_prompt, user_message, image_path, messages=messages)
             else:
                 raise RuntimeError(f"Unknown provider: {preferred_provider}")
         except Exception as e:
@@ -394,7 +421,7 @@ def chat_with_failover(
         try:
             if OllamaProvider.is_available():
                 logger.info("Using Ollama (local) for analysis...")
-                return OllamaProvider.chat(system_prompt, user_message)
+                return OllamaProvider.chat(system_prompt, user_message, messages=messages)
             else:
                 errors.append("Ollama not running")
         except Exception as e:
@@ -408,7 +435,7 @@ def chat_with_failover(
     try:
         if GeminiProvider.is_available():
             logger.info("Using Gemini for analysis...")
-            return GeminiProvider.chat(system_prompt, user_message, image_path)
+            return GeminiProvider.chat(system_prompt, user_message, image_path, messages=messages)
         else:
             errors.append("Gemini API key not configured")
     except Exception as e:
@@ -419,7 +446,7 @@ def chat_with_failover(
     try:
         if ClaudeProvider.is_available():
             logger.info("Using Claude for analysis...")
-            return ClaudeProvider.chat(system_prompt, user_message, image_path)
+            return ClaudeProvider.chat(system_prompt, user_message, image_path, messages=messages)
         else:
             errors.append("Claude API key not configured")
     except Exception as e:

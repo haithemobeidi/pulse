@@ -134,33 +134,52 @@ async function loadProviderStatus() {
   }
 }
 
+// Chat state
+let chatHistory = []; // {role: 'user'|'assistant', content: ''}
+let isFirstMessage = true;
+
 function setupTroubleshoot() {
-  const analyzeBtn = document.getElementById('analyze-btn');
-  const problemInput = document.getElementById('problem-input');
+  const sendBtn = document.getElementById('analyze-btn');
+  const input = document.getElementById('problem-input');
 
-  if (!analyzeBtn || !problemInput) return;
+  if (!sendBtn || !input) return;
 
-  // Reset stale state from previous sessions (browser cache restores DOM)
-  const scanProgress = document.getElementById('scan-progress');
-  const analysisResults = document.getElementById('analysis-results');
-  if (scanProgress) scanProgress.style.display = 'none';
-  if (analysisResults) analysisResults.style.display = 'none';
-
-  analyzeBtn.addEventListener('click', () => runAnalysis());
-  problemInput.addEventListener('keydown', (e) => {
+  sendBtn.addEventListener('click', () => sendMessage());
+  input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      runAnalysis();
+      sendMessage();
     }
   });
+
+  // Auto-resize textarea
+  input.addEventListener('input', () => {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+  });
+
+  // New chat button
+  const newChatBtn = document.getElementById('new-chat-btn');
+  if (newChatBtn) {
+    newChatBtn.addEventListener('click', () => {
+      chatHistory = [];
+      isFirstMessage = true;
+      window._screenshotData = null;
+      const area = document.getElementById('screenshot-area');
+      if (area) area.style.display = 'none';
+      document.getElementById('chat-messages').innerHTML = `
+        <div class="chat-welcome">
+          <h2>What's wrong with your PC?</h2>
+          <p style="color:var(--text-secondary);">Describe your problem below. I'll scan your system and help diagnose it.</p>
+        </div>`;
+    });
+  }
 
   // Screenshot: file upload
   const fileInput = document.getElementById('screenshot-file');
   if (fileInput) {
     fileInput.addEventListener('change', (e) => {
-      if (e.target.files && e.target.files[0]) {
-        handleScreenshot(e.target.files[0]);
-      }
+      if (e.target.files && e.target.files[0]) handleScreenshot(e.target.files[0]);
     });
   }
 
@@ -183,8 +202,7 @@ function setupTroubleshoot() {
     removeBtn.addEventListener('click', (e) => {
       e.preventDefault();
       window._screenshotData = null;
-      document.getElementById('screenshot-preview').style.display = 'none';
-      document.getElementById('screenshot-label').style.display = '';
+      document.getElementById('screenshot-area').style.display = 'none';
     });
   }
 
@@ -199,11 +217,9 @@ function handleScreenshot(file) {
     const dataUrl = e.target.result;
     window._screenshotData = dataUrl;
     const img = document.getElementById('screenshot-img');
-    const preview = document.getElementById('screenshot-preview');
-    const label = document.getElementById('screenshot-label');
+    const area = document.getElementById('screenshot-area');
     img.src = dataUrl;
-    preview.style.display = 'inline-block';
-    label.style.display = 'none';
+    area.style.display = 'block';
     showNotification('Screenshot attached', 'success');
   };
   reader.readAsDataURL(file);
@@ -237,191 +253,154 @@ async function checkSystemStatus() {
   }
 }
 
-async function runAnalysis() {
-  const problemInput = document.getElementById('problem-input');
-  const analyzeBtn = document.getElementById('analyze-btn');
-  const progressDiv = document.getElementById('scan-progress');
-  const progressFill = document.getElementById('progress-fill');
-  const scanStatus = document.getElementById('scan-status');
-  const resultsDiv = document.getElementById('analysis-results');
+async function sendMessage() {
+  const input = document.getElementById('problem-input');
+  const sendBtn = document.getElementById('analyze-btn');
+  const chatMessages = document.getElementById('chat-messages');
 
-  const description = problemInput.value.trim();
-  if (!description) {
-    showNotification('Describe your problem first', 'warning');
-    problemInput.focus();
-    return;
-  }
+  const text = input.value.trim();
+  if (!text) return;
 
   const provider = document.getElementById('provider-select').value;
 
-  // Show progress
-  analyzeBtn.disabled = true;
-  analyzeBtn.textContent = 'Analyzing...';
-  progressDiv.style.display = 'block';
-  resultsDiv.style.display = 'none';
+  // Clear welcome message on first send
+  const welcome = chatMessages.querySelector('.chat-welcome');
+  if (welcome) welcome.remove();
 
-  // Animate progress with realistic timing
-  let progress = 0;
-  const steps = [
-    'Collecting hardware data...',
-    'Scanning monitors & reliability...',
-    'Sending to AI for analysis...',
-    'Waiting for AI response...',
-    'Processing diagnosis...',
-  ];
-  const stepInterval = setInterval(() => {
-    progress = Math.min(progress + 5, 95);
-    progressFill.style.width = progress + '%';
-    const stepIdx = Math.min(Math.floor(progress / 20), steps.length - 1);
-    scanStatus.textContent = steps[stepIdx];
-  }, 1500);
+  // Add user message to chat
+  addChatMessage('user', text);
+  chatHistory.push({ role: 'user', content: text });
+  input.value = '';
+  input.style.height = 'auto';
 
-  // Timeout: abort after 60 seconds
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 60000);
+  // Show typing indicator
+  const typingEl = document.createElement('div');
+  typingEl.className = 'chat-typing';
+  typingEl.textContent = isFirstMessage ? 'Scanning system & analyzing...' : 'Thinking...';
+  chatMessages.appendChild(typingEl);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+
+  sendBtn.disabled = true;
 
   try {
-    console.log('[Pulse] Starting analysis...');
-    const startTime = Date.now();
+    let responseText = '';
+    let providerUsed = '';
 
-    // Include screenshot if attached
-    const payload = { description, provider };
-    if (window._screenshotData) {
-      payload.screenshot = window._screenshotData;
+    if (isFirstMessage) {
+      // First message: full analysis (scan + AI)
+      isFirstMessage = false;
+
+      const payload = { description: text, provider, include_context: true };
+      if (window._screenshotData) {
+        payload.screenshot = window._screenshotData;
+        window._screenshotData = null;
+        document.getElementById('screenshot-area').style.display = 'none';
+      }
+
+      const resp = await fetch(`${API_BASE}/api/ai/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const analysis = await resp.json();
+
+      if (analysis.error && !analysis.diagnosis) {
+        throw new Error(analysis.error);
+      }
+
+      // Build readable response from structured analysis
+      responseText = formatAnalysisAsChat(analysis);
+      providerUsed = `${analysis.provider || '?'} (${analysis.model || '?'})`;
+      chatHistory.push({ role: 'assistant', content: responseText });
+
+    } else {
+      // Follow-up: conversational chat with history
+      const resp = await fetch(`${API_BASE}/api/ai/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: chatHistory, provider }),
+      });
+
+      const data = await resp.json();
+      if (data.error) throw new Error(data.error);
+
+      responseText = data.response || 'No response';
+      providerUsed = `${data.provider || '?'} (${data.model || '?'})`;
+      chatHistory.push({ role: 'assistant', content: responseText });
     }
-    // Tell backend to include recent context
-    payload.include_context = true;
 
-    const resp = await fetch(`${API_BASE}/api/ai/analyze`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeout);
-    clearInterval(stepInterval);
-
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`[Pulse] Analysis completed in ${elapsed}s`);
-
-    progressFill.style.width = '100%';
-    scanStatus.textContent = `Done! (${elapsed}s)`;
-
-    const analysis = await resp.json();
-
-    if (analysis.error && !analysis.diagnosis) {
-      showNotification(`Analysis failed: ${analysis.error}`, 'error');
-      progressDiv.style.display = 'none';
-      return;
-    }
-
-    displayAnalysis(analysis);
+    typingEl.remove();
+    addChatMessage('assistant', responseText, providerUsed);
 
   } catch (error) {
-    clearTimeout(timeout);
-    clearInterval(stepInterval);
-    progressDiv.style.display = 'none';
-
-    if (error.name === 'AbortError') {
-      console.error('[Pulse] Analysis timed out after 60s');
-      showNotification('Analysis timed out. Try again or use a different AI provider.', 'error');
-    } else {
-      console.error('[Pulse] Analysis failed:', error);
-      showNotification(`Analysis failed: ${error.message}`, 'error');
-    }
+    typingEl.remove();
+    addChatMessage('system', `Error: ${error.message}`);
+    console.error('[Pulse] Chat error:', error);
   } finally {
-    analyzeBtn.disabled = false;
-    analyzeBtn.textContent = 'Analyze';
-    setTimeout(() => progressDiv.classList.add('hidden'), 2000);
+    sendBtn.disabled = false;
+    input.focus();
   }
 }
 
-function displayAnalysis(analysis) {
-  const resultsDiv = document.getElementById('analysis-results');
-  resultsDiv.style.display = 'block';
+function addChatMessage(role, content, meta = '') {
+  const chatMessages = document.getElementById('chat-messages');
+  const msgEl = document.createElement('div');
+  msgEl.className = `chat-msg ${role}`;
 
-  // Diagnosis
-  const confidence = analysis.confidence || 0;
-  const confPct = Math.round(confidence * 100);
-  const confColor = confidence > 0.7 ? '#a6e3a1' : confidence > 0.4 ? '#f9e2af' : '#f38ba8';
-  document.getElementById('confidence-badge').innerHTML =
-    `<span style="color:${confColor};font-weight:bold;">${confPct}% confidence</span>`;
-  document.getElementById('diagnosis-text').textContent = analysis.diagnosis || 'No diagnosis available';
-  document.getElementById('root-cause').textContent = analysis.root_cause
-    ? `Root cause: ${analysis.root_cause}`
-    : '';
-  document.getElementById('provider-used').textContent =
-    `Analyzed by ${analysis.provider || 'unknown'} (${analysis.model || ''})`;
+  if (role === 'user') {
+    msgEl.textContent = content;
+  } else if (role === 'system') {
+    msgEl.textContent = content;
+  } else {
+    msgEl.innerHTML = formatMessageContent(content);
+    if (meta) {
+      msgEl.innerHTML += `<div class="msg-meta">${escapeHtml(meta)}</div>`;
+    }
+  }
 
-  // Fixes
-  const fixesList = document.getElementById('fixes-list');
+  chatMessages.appendChild(msgEl);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function formatAnalysisAsChat(analysis) {
+  let parts = [];
+
+  if (analysis.diagnosis) {
+    const confPct = Math.round((analysis.confidence || 0) * 100);
+    parts.push(`**Diagnosis** (${confPct}% confidence):\n${analysis.diagnosis}`);
+  }
+  if (analysis.root_cause) {
+    parts.push(`**Root Cause:** ${analysis.root_cause}`);
+  }
+
   const fixes = analysis.suggested_fixes || [];
-
   if (fixes.length > 0) {
-    fixesList.innerHTML = '<h3 style="color:#cdd6f4;margin:16px 0 8px;">Suggested Fixes</h3>' +
-      fixes.map((fix, i) => {
-        const riskColors = {
-          none: '#a6e3a1', low: '#a6e3a1', medium: '#f9e2af',
-          high: '#fab387', critical: '#f38ba8'
-        };
-        const riskColor = riskColors[fix.risk_level] || '#a6adc8';
-        const successPct = Math.round((fix.estimated_success || 0) * 100);
-        const fixId = fix.id || '';
-
-        return `
-          <div class="card" style="border-left:3px solid ${riskColor};" data-fix-id="${fixId}">
-            <div style="display:flex;justify-content:space-between;align-items:start;">
-              <h4 style="color:#cdd6f4;margin:0;">${escapeHtml(fix.title)}</h4>
-              <span style="color:${riskColor};font-size:12px;text-transform:uppercase;">${escapeHtml(fix.risk_level)} risk</span>
-            </div>
-            <p style="color:#a6adc8;margin:8px 0;">${escapeHtml(fix.description)}</p>
-            <div style="background:#11111b;padding:10px;border-radius:6px;margin:8px 0;">
-              <code style="color:#89b4fa;font-size:13px;white-space:pre-wrap;">${escapeHtml(fix.action_detail)}</code>
-            </div>
-            <div style="display:flex;gap:8px;align-items:center;margin-top:10px;">
-              <span style="color:#585b70;font-size:12px;">Success: ${successPct}% | ${fix.reversible ? 'Reversible' : 'Not reversible'}</span>
-              <div style="flex:1;"></div>
-              ${fixId ? `
-                <button class="btn btn-secondary fix-approve-btn" data-fix-id="${fixId}" style="padding:6px 14px;font-size:13px;">Approve</button>
-                <button class="btn fix-reject-btn" data-fix-id="${fixId}" style="padding:6px 14px;font-size:13px;background:#45475a;color:#cdd6f4;border:none;border-radius:6px;cursor:pointer;">Reject</button>
-              ` : ''}
-            </div>
-            <div class="fix-status" data-fix-id="${fixId}" style="margin-top:8px;"></div>
-          </div>`;
-      }).join('');
-
-    // Attach fix button handlers
-    fixesList.querySelectorAll('.fix-approve-btn').forEach(btn => {
-      btn.addEventListener('click', () => handleFixApprove(btn.dataset.fixId));
+    parts.push('**Suggested Fixes:**');
+    fixes.forEach((fix, i) => {
+      const successPct = Math.round((fix.estimated_success || 0) * 100);
+      parts.push(`${i + 1}. **${fix.title}** (${fix.risk_level} risk, ${successPct}% success)\n   ${fix.description}\n   \`${fix.action_detail}\``);
     });
-    fixesList.querySelectorAll('.fix-reject-btn').forEach(btn => {
-      btn.addEventListener('click', () => handleFixReject(btn.dataset.fixId));
-    });
-  } else {
-    fixesList.innerHTML = '';
   }
 
-  // Questions
   const questions = analysis.questions || [];
-  const questionsDiv = document.getElementById('ai-questions');
   if (questions.length > 0) {
-    questionsDiv.classList.remove('hidden');
-    document.getElementById('questions-list').innerHTML =
-      questions.map(q => `<li style="margin:6px 0;">${escapeHtml(q)}</li>`).join('');
-  } else {
-    questionsDiv.classList.add('hidden');
+    parts.push('**Questions for you:**\n' + questions.map(q => `- ${q}`).join('\n'));
   }
 
-  // Prevention
-  const preventive = analysis.preventive_tips;
-  const preventiveDiv = document.getElementById('preventive-card');
-  if (preventive) {
-    preventiveDiv.classList.remove('hidden');
-    document.getElementById('preventive-text').textContent = preventive;
-  } else {
-    preventiveDiv.classList.add('hidden');
+  if (analysis.preventive_tips) {
+    parts.push(`**Prevention:** ${analysis.preventive_tips}`);
   }
+
+  return parts.join('\n\n');
+}
+
+function formatMessageContent(text) {
+  let html = escapeHtml(text);
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/`([^`]+)`/g, '<code style="background:#11111b;padding:2px 6px;border-radius:3px;color:#89b4fa;">$1</code>');
+  html = html.replace(/\n/g, '<br>');
+  return html;
 }
 
 async function handleFixApprove(fixId) {

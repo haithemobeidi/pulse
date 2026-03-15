@@ -170,7 +170,32 @@ Recommendation: "Driver 592.06 may cause blackouts. Rollback to 591.74?"
 3. Detect pattern: "Blackouts when GPU frequency dips below 2.0GHz for >100ms"
 4. Recommend: "Check GPU power supply", "Update drivers", "Adjust power settings"
 
+## Phase 3: Consumer-Ready Features
+
+### Visual Step-by-Step Guides
+**Goal**: Generate annotated images/screenshots showing users exactly where to click or what to look for.
+
+**Why**: Text instructions like "open Device Manager > Display Adapters > right-click..." lose people. Visual guides with arrows and highlights would be much more effective, especially for non-technical users.
+
+**Options**:
+- **Stable Diffusion (local)**: User has RTX 5090 32GB — can run SD locally for free. Could generate UI mockups or annotated diagrams.
+- **Automated screenshot annotation**: Take a screenshot, use AI to identify UI elements, overlay arrows/highlights programmatically (no image generation needed — just image manipulation with Pillow/PIL).
+- **Pre-built visual library**: Common Windows dialogs (Device Manager, Settings, etc.) with pre-annotated versions stored locally.
+
+**Recommended**: Start with automated screenshot annotation (Pillow + AI element detection). Cheaper and more accurate than generating images from scratch.
+
+### Tauri Desktop App
+- Convert from Flask web app to native Windows app
+- System tray integration, native notifications
+- Better performance, no browser dependency
+- Auto-start with Windows option
+
+### Network Security Scanner
+- Port scanning, firewall status
+- Network hardening suggestions
+- Connected device inventory
+
 ---
 
-*Last Updated: 2026-01-30*
-*MVP Status: Core infrastructure complete, ready for Phase 2 features*
+*Last Updated: 2026-03-14*
+*Status: Chat-based troubleshooting working, dashboard with live stats, 7 hardware cards*
