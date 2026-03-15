@@ -6,6 +6,7 @@ import * as api from './api/client.js';
 import { initDashboard } from './pages/dashboard.js';
 import { initIssues } from './pages/issues.js';
 import { initTimeline } from './pages/timeline.js';
+import { initLearning } from './pages/learning.js';
 import { setupTroubleshoot, loadProviderStatus } from './pages/troubleshoot.js';
 import { setupIssueModal } from './components/issue-modal.js';
 import { setupDataCollection } from './components/data-collection.js';
@@ -90,6 +91,9 @@ async function loadPageData(pageName) {
         break;
       case 'timeline':
         await initTimeline();
+        break;
+      case 'learning':
+        await initLearning();
         break;
     }
   } catch (error) {

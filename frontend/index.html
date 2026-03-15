@@ -18,6 +18,7 @@
             <button class="nav-btn" data-page="dashboard">Dashboard</button>
             <button class="nav-btn" data-page="issues">Issues</button>
             <button class="nav-btn" data-page="timeline">Timeline</button>
+            <button class="nav-btn" data-page="learning">Learning</button>
         </nav>
 
         <!-- Troubleshoot Page -->
@@ -177,8 +178,74 @@
         <!-- Timeline Page -->
         <section id="timeline" class="page">
             <h2>System Timeline</h2>
-            <div id="timeline-view" class="timeline">
+            <div id="timeline-view">
                 <p class="loading">Loading timeline...</p>
+            </div>
+        </section>
+
+        <!-- Learning Page -->
+        <section id="learning" class="page">
+            <h2>Learning Engine</h2>
+            <p class="subtitle" style="margin-bottom:20px;">How Pulse learns from your fix history over time</p>
+
+            <!-- Stats Summary -->
+            <div class="dash-row dash-row-3" id="learning-stats">
+                <div class="card">
+                    <h3>Patterns</h3>
+                    <div id="learning-pattern-count" class="learning-stat-value">—</div>
+                    <div class="learning-stat-label">Active patterns tracked</div>
+                </div>
+                <div class="card">
+                    <h3>Corrections</h3>
+                    <div id="learning-correction-count" class="learning-stat-value">—</div>
+                    <div class="learning-stat-label">User edits captured</div>
+                </div>
+                <div class="card">
+                    <h3>Embeddings</h3>
+                    <div id="learning-embedding-count" class="learning-stat-value">—</div>
+                    <div class="learning-stat-label">Issues & fixes indexed</div>
+                </div>
+            </div>
+
+            <!-- Patterns -->
+            <div class="card" style="margin-bottom:15px;">
+                <h3>Learned Patterns</h3>
+                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">
+                    Confidence decays over time (half-life: 30 days). Brighter bars = more relevant.
+                </p>
+                <div id="learning-patterns">
+                    <p class="loading">Loading patterns...</p>
+                </div>
+            </div>
+
+            <!-- Fix State Machine -->
+            <div class="card" style="margin-bottom:15px;">
+                <h3>Fix Lifecycle</h3>
+                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">
+                    Fixes go through: pending → approved → executed → holding (24h) → resolved/failed
+                </p>
+                <div id="learning-fixes">
+                    <p class="loading">Loading fix history...</p>
+                </div>
+            </div>
+
+            <!-- Style Guides -->
+            <div class="card" style="margin-bottom:15px;">
+                <h3>Style Guides</h3>
+                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">
+                    Generated after 3+ corrections. Shapes how the AI writes responses.
+                </p>
+                <div id="learning-style-guides">
+                    <p class="loading">Loading style guides...</p>
+                </div>
+            </div>
+
+            <!-- Recent Corrections -->
+            <div class="card">
+                <h3>Recent Corrections</h3>
+                <div id="learning-corrections">
+                    <p class="loading">Loading corrections...</p>
+                </div>
             </div>
         </section>
 

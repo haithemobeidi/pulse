@@ -120,6 +120,52 @@ def get_recommendations():
         return jsonify({'error': str(e)}), 500
 
 
+@bp.route('/api/learning/overview')
+def learning_overview():
+    """Get all patterns with decayed confidence for the learning dashboard."""
+    try:
+        learning = LearningEngine(db)
+        patterns = learning.get_active_patterns_decayed()
+        return jsonify({
+            'patterns': patterns,
+            'total': len(patterns),
+        })
+    except Exception as e:
+        return jsonify({'error': str(e), 'patterns': [], 'total': 0}), 500
+
+
+@bp.route('/api/learning/fixes')
+def learning_fixes():
+    """Get recent fixes with their state machine status."""
+    try:
+        cursor = db.execute("""
+            SELECT sf.*, i.description as issue_description, i.issue_type
+            FROM suggested_fixes sf
+            JOIN issues i ON sf.issue_id = i.id
+            ORDER BY sf.id DESC
+            LIMIT 50
+        """)
+        fixes = [dict(row) for row in cursor.fetchall()]
+        return jsonify({'fixes': fixes, 'total': len(fixes)})
+    except Exception as e:
+        return jsonify({'error': str(e), 'fixes': [], 'total': 0}), 500
+
+
+@bp.route('/api/learning/embeddings')
+def learning_embeddings():
+    """Get embedding counts for the learning dashboard."""
+    try:
+        issue_count = db.execute("SELECT COUNT(*) FROM embeddings WHERE entity_type = 'issue'").fetchone()[0]
+        fix_count = db.execute("SELECT COUNT(*) FROM embeddings WHERE entity_type = 'fix'").fetchone()[0]
+        return jsonify({
+            'total': issue_count + fix_count,
+            'issues': issue_count,
+            'fixes': fix_count,
+        })
+    except Exception as e:
+        return jsonify({'error': str(e), 'total': 0}), 500
+
+
 @bp.route('/api/debug/system-info')
 def debug_system_info():
     debug_info = {
