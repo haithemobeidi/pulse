@@ -605,4 +605,22 @@ async function init() {
 
 document.addEventListener('DOMContentLoaded', init);
 
+// Auto-reload when server restarts
+(function serverHeartbeat() {
+  let wasDown = false;
+  setInterval(async () => {
+    try {
+      const resp = await fetch('/api/status', { signal: AbortSignal.timeout(3000) });
+      if (resp.ok && wasDown) {
+        console.log('[Pulse] Server is back — reloading page');
+        location.reload();
+      }
+      wasDown = false;
+    } catch {
+      if (!wasDown) console.log('[Pulse] Server connection lost — waiting for restart...');
+      wasDown = true;
+    }
+  }, 3000);
+})();
+
 export { api };
