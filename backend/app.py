@@ -1047,9 +1047,9 @@ def startup_collect():
 if __name__ == '__main__':
     port = 5000
 
-    # Open browser in background thread
-    thread = threading.Thread(target=open_browser, args=(port,), daemon=True)
-    thread.start()
+    # Browser auto-open disabled — use Pulse Manager or existing tab
+    # thread = threading.Thread(target=open_browser, args=(port,), daemon=True)
+    # thread.start()
 
     # Run initial data collection in background
     collect_thread = threading.Thread(target=startup_collect, daemon=True)
