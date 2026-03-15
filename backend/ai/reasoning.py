@@ -185,6 +185,50 @@ def build_context(db, issue_description: str) -> Dict[str, Any]:
     return context
 
 
+def _describe_image(image_path: str) -> Optional[str]:
+    """
+    Use a vision-capable model (Gemini or Claude) to describe a screenshot.
+    Returns a text description that can be fed to a text-only model like Ollama.
+    """
+    describe_prompt = """Describe this screenshot in detail for a PC troubleshooting context.
+Focus on: error messages, dialog boxes, blue screens, application windows, system notifications,
+performance graphs, or anything that indicates a problem. Be specific about any text visible.
+Keep it concise but thorough — 2-4 sentences."""
+
+    # Try Gemini first (free tier)
+    try:
+        if GeminiProvider.is_available():
+            logger.info("Using Gemini to describe screenshot...")
+            result = GeminiProvider.chat(
+                system_prompt="You describe screenshots for PC troubleshooting. Be concise and specific.",
+                user_message=describe_prompt,
+                image_path=image_path,
+            )
+            description = result.get("content", "").strip()
+            if description:
+                return description
+    except Exception as e:
+        logger.warning(f"Gemini image description failed: {e}")
+
+    # Try Claude as fallback
+    try:
+        if ClaudeProvider.is_available():
+            logger.info("Using Claude to describe screenshot...")
+            result = ClaudeProvider.chat(
+                system_prompt="You describe screenshots for PC troubleshooting. Be concise and specific.",
+                user_message=describe_prompt,
+                image_path=image_path,
+            )
+            description = result.get("content", "").strip()
+            if description:
+                return description
+    except Exception as e:
+        logger.warning(f"Claude image description failed: {e}")
+
+    logger.warning("No vision-capable provider available to describe screenshot")
+    return None
+
+
 def analyze_issue(
     db,
     issue_description: str,
@@ -305,6 +349,16 @@ RECENT ISSUES REPORTED BY USER:
 Remember: Focus on what the user described. The system data is context, not the problem. Respond ONLY with valid JSON."""
 
     try:
+        # If screenshot provided and using a non-vision model (Ollama),
+        # first get a description from a vision-capable model (Gemini/Claude)
+        if screenshot_path and preferred_provider in ("ollama", "auto"):
+            image_description = _describe_image(screenshot_path)
+            if image_description:
+                user_message = f"SCREENSHOT DESCRIPTION (from image analysis):\n{image_description}\n\n{user_message}"
+                logger.info(f"Image described by vision model: {image_description[:100]}...")
+                # Don't pass image to Ollama (it can't read it)
+                screenshot_path = None
+
         # Call AI with failover
         result = chat_with_failover(
             system_prompt=SYSTEM_PROMPT,
