@@ -442,16 +442,30 @@ def analyze():
         # Store each suggested fix with pending status
         stored_fixes = []
         for fix_data in analysis.get('suggested_fixes', []):
+            # Ensure all values are scalar (AI may return lists)
+            def to_str(v):
+                if isinstance(v, list):
+                    return '\n'.join(str(i) for i in v)
+                return str(v) if v is not None else ''
+
+            def to_float(v):
+                if isinstance(v, list):
+                    v = v[0] if v else 0.5
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return 0.5
+
             fix = SuggestedFix(
                 analysis_id=analysis_id,
                 issue_id=issue_id,
-                title=fix_data.get('title', ''),
-                description=fix_data.get('description', ''),
-                risk_level=fix_data.get('risk_level', 'medium'),
-                action_type=fix_data.get('action_type', 'manual'),
-                action_detail=fix_data.get('action_detail', ''),
-                estimated_success=fix_data.get('estimated_success', 0.5),
-                reversible=fix_data.get('reversible', True),
+                title=to_str(fix_data.get('title', '')),
+                description=to_str(fix_data.get('description', '')),
+                risk_level=to_str(fix_data.get('risk_level', 'medium')),
+                action_type=to_str(fix_data.get('action_type', 'manual')),
+                action_detail=to_str(fix_data.get('action_detail', '')),
+                estimated_success=to_float(fix_data.get('estimated_success', 0.5)),
+                reversible=bool(fix_data.get('reversible', True)),
                 status='pending',
             )
             fix_id = db.create_suggested_fix(fix)
