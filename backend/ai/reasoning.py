@@ -24,42 +24,40 @@ from backend.ai.providers import (
 logger = logging.getLogger(__name__)
 
 
-SYSTEM_PROMPT = """You are Pulse, a Windows PC troubleshooting assistant. You analyze system diagnostic data and help users fix problems.
+SYSTEM_PROMPT = """You are Pulse, a Windows PC troubleshooting assistant. You help users diagnose and fix PC problems through conversation.
 
-You have access to the user's actual hardware configuration, reliability monitor data, event logs, and system state. Use this data to provide specific, actionable diagnoses.
-
-RULES:
-1. Never suggest deleting files, formatting drives, or reinstalling Windows unless the situation truly warrants it and the user explicitly asks.
-2. Always prefer the least invasive fix first.
-3. For each fix, specify the EXACT action: the precise command, registry path, setting, or steps.
-4. Rate your confidence in the diagnosis from 0.0 to 1.0.
-5. Rate each fix's estimated success probability.
-6. Classify risk: none, low, medium, high, critical.
-7. Reference the user's specific hardware when relevant.
-8. If you see patterns from past issues, mention them.
-9. Consider recent system changes (driver updates, software installs) as potential causes.
-10. NEVER suggest running commands that delete data without explicit warning.
+CRITICAL RULES:
+1. FOCUS ON WHAT THE USER SAID. Their description is the primary input. System data is supporting evidence — do NOT diagnose problems they didn't mention.
+2. If the user says "check the timeline" or "look at recent events", THEN focus on timeline data. Otherwise, use it only if it's clearly relevant to their stated problem.
+3. If a screenshot description is provided, analyze what the screenshot shows and relate it to the user's problem.
+4. Ask clarifying questions when the problem is vague. Don't jump to conclusions.
+5. Never suggest deleting files, formatting drives, or reinstalling Windows unless truly warranted.
+6. Always prefer the least invasive fix first.
+7. For each fix, specify EXACT steps: commands, registry paths, settings.
+8. If the system data doesn't relate to the user's problem, say so — don't force a connection.
+9. NEVER suggest running commands that delete data without explicit warning.
+10. Keep the diagnosis conversational and clear, not overly technical.
 
 RESPONSE FORMAT:
-Respond ONLY with valid JSON matching this schema (no markdown, no explanation outside the JSON):
+Respond ONLY with valid JSON (no markdown, no text outside the JSON):
 {
-  "diagnosis": "Clear description of what's likely wrong",
+  "diagnosis": "Clear description focused on the user's stated problem",
   "confidence": 0.0-1.0,
-  "root_cause": "Most likely root cause based on the evidence",
+  "root_cause": "Most likely root cause based on what the user described + supporting evidence",
   "suggested_fixes": [
     {
-      "title": "Short title for this fix",
-      "description": "What this fix does and why it should help",
+      "title": "Short title",
+      "description": "What this does and why it helps",
       "risk_level": "none|low|medium|high|critical",
       "action_type": "command|registry|service|manual|setting|download",
-      "action_detail": "Exact command, steps, or registry path",
+      "action_detail": "Exact command or steps",
       "estimated_success": 0.0-1.0,
       "reversible": true|false
     }
   ],
-  "questions": ["Clarifying questions if you need more info"],
-  "preventive_tips": "What the user can do to prevent this in the future",
-  "related_patterns": "Any patterns you notice from the data"
+  "questions": ["Questions to better understand the problem — always ask at least one"],
+  "preventive_tips": "Prevention advice if applicable",
+  "related_patterns": "Relevant patterns from system data, if any"
 }"""
 
 
@@ -217,24 +215,94 @@ def analyze_issue(
     # Build context from system data
     context = build_context(db, issue_description)
 
-    # Build the user message with all context
-    user_message = f"""I'm having a problem with my PC:
+    # Build a clean, structured user message
+    hw = context.get('hardware', {})
+    gpu = hw.get('gpu', {})
+    cpu_data = hw.get('cpu', {}).get('component_data', {})
+    mem_data = hw.get('memory', {}).get('component_data', {})
+    mb_data = hw.get('motherboard', {}).get('component_data', {})
 
-**Problem:** {issue_description}
+    # Hardware summary (compact, not raw JSON dump)
+    hw_summary = []
+    if gpu:
+        hw_summary.append(f"GPU: {gpu.get('gpu_name', 'Unknown')} (Driver: {gpu.get('driver_version', '?')}, VRAM: {gpu.get('vram_total_mb', 0) // 1024}GB, Temp: {gpu.get('temperature_c', '?')}°C)")
+    if isinstance(cpu_data, dict) and cpu_data.get('name'):
+        hw_summary.append(f"CPU: {cpu_data['name']} ({cpu_data.get('physical_cores', '?')} cores, {cpu_data.get('usage_percent', '?')}% usage)")
+    elif isinstance(cpu_data, str):
+        try:
+            cd = json.loads(cpu_data)
+            if cd.get('name'):
+                hw_summary.append(f"CPU: {cd['name']} ({cd.get('physical_cores', '?')} cores)")
+        except Exception:
+            pass
+    if isinstance(mem_data, dict) and mem_data.get('total_gb'):
+        hw_summary.append(f"RAM: {mem_data['total_gb']}GB {mem_data.get('memory_type', '')} ({mem_data.get('percent_used', '?')}% used)")
+    elif isinstance(mem_data, str):
+        try:
+            md = json.loads(mem_data)
+            if md.get('total_gb'):
+                hw_summary.append(f"RAM: {md['total_gb']}GB {md.get('memory_type', '')} ({md.get('percent_used', '?')}% used)")
+        except Exception:
+            pass
+    if isinstance(mb_data, dict) and mb_data.get('product'):
+        hw_summary.append(f"Motherboard: {mb_data.get('manufacturer', '')} {mb_data['product']}")
+    elif isinstance(mb_data, str):
+        try:
+            mbd = json.loads(mb_data)
+            if mbd.get('product'):
+                hw_summary.append(f"Motherboard: {mbd.get('manufacturer', '')} {mbd['product']}")
+        except Exception:
+            pass
 
-**My Hardware:**
-{json.dumps(context.get('hardware', {}), indent=2, default=str)}
+    monitors = hw.get('monitors', [])
+    if monitors:
+        mon_list = ', '.join(f"{m.get('monitor_name', '?')} ({m.get('connection_type', '?')})" for m in monitors)
+        hw_summary.append(f"Monitors: {mon_list}")
 
-**Reliability Monitor (last 14 days):**
-{json.dumps(context.get('reliability', {}), indent=2, default=str)}
+    # Reliability summary (compact — only relevant events, not full dump)
+    rel = context.get('reliability', {})
+    rel_summary = ""
+    if rel.get('records'):
+        crashes = [r for r in rel['records'] if 'crash' in r.get('record_type', '')]
+        installs = [r for r in rel['records'] if 'install' in r.get('record_type', '')]
+        updates = [r for r in rel['records'] if 'update' in r.get('record_type', '')]
+        parts = []
+        if crashes:
+            parts.append(f"{len(crashes)} crash(es): " + '; '.join(
+                f"{r.get('source_name', '?')} ({r.get('event_time', '?')})" for r in crashes[:5]
+            ))
+        if installs:
+            parts.append(f"{len(installs)} install(s): " + '; '.join(
+                f"{r.get('product_name', r.get('source_name', '?'))} ({r.get('event_time', '?')})" for r in installs[:5]
+            ))
+        if updates:
+            parts.append(f"{len(updates)} update(s)")
+        if rel.get('stability_index'):
+            parts.append(f"Stability index: {rel['stability_index']}/10")
+        rel_summary = '\n'.join(parts)
 
-**Recent Issues I've Reported:**
-{json.dumps(context.get('recent_issues', []), indent=2, default=str)}
+    # Recent issues summary
+    issues_summary = ""
+    recent = context.get('recent_issues', [])
+    if recent:
+        issues_summary = '\n'.join(
+            f"- [{i.get('timestamp', '?')}] {i.get('issue_type', '?')}: {i.get('description', '')[:100]}"
+            for i in recent[:5]
+        )
 
-**Learned Patterns from Past Fixes:**
-{json.dumps(context.get('learned_patterns', []), indent=2, default=str)}
+    user_message = f"""USER'S PROBLEM (this is what you should focus on):
+{issue_description}
 
-Analyze this problem given my specific hardware and system history. Respond ONLY with valid JSON in the format specified."""
+SYSTEM HARDWARE:
+{chr(10).join(hw_summary) if hw_summary else 'No hardware data available'}
+
+RECENT SYSTEM EVENTS (use as supporting evidence only — do NOT diagnose these unless the user asked about them):
+{rel_summary if rel_summary else 'No recent events'}
+
+RECENT ISSUES REPORTED BY USER:
+{issues_summary if issues_summary else 'No recent issues'}
+
+Remember: Focus on what the user described. The system data is context, not the problem. Respond ONLY with valid JSON."""
 
     try:
         # Call AI with failover
