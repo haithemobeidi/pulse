@@ -30,6 +30,14 @@ function startLiveStats() {
   if (liveInterval) clearInterval(liveInterval);
   updateLiveStats(); // immediate first update
   liveInterval = setInterval(updateLiveStats, 5000);
+
+  // Expose stop function globally so navigation can call it
+  window.stopLiveStats = () => {
+    if (liveInterval) {
+      clearInterval(liveInterval);
+      liveInterval = null;
+    }
+  };
 }
 
 async function updateLiveStats() {
@@ -37,11 +45,35 @@ async function updateLiveStats() {
     const resp = await fetch('http://localhost:5000/api/live-stats');
     const stats = await resp.json();
 
-    // Update health bar items if they exist
+    // Helper to update a data-live element
+    function setLive(key, value) {
+      const el = document.querySelector(`[data-live="${key}"]`);
+      if (el) el.textContent = value;
+    }
+
+    // Update card values
+    if (stats.cpu_percent !== undefined) {
+      setLive('cpu-usage', `${stats.cpu_percent}%`);
+    }
+    if (stats.ram_used_gb !== undefined) {
+      setLive('ram-used', `${stats.ram_used_gb} GB (${stats.ram_percent}%)`);
+      setLive('ram-available', `${(stats.ram_total_gb - stats.ram_used_gb).toFixed(1)}`);
+    }
+    if (stats.gpu_temp !== undefined) {
+      setLive('gpu-temp', `${stats.gpu_temp}°C`);
+    }
+    if (stats.gpu_vram_used_mb !== undefined) {
+      const usedGb = (stats.gpu_vram_used_mb / 1024).toFixed(1);
+      setLive('gpu-vram', `${usedGb} GB (${stats.gpu_vram_percent}%)`);
+    }
+    if (stats.gpu_usage !== undefined) {
+      setLive('gpu-usage', `${stats.gpu_usage}%`);
+    }
+
+    // Update health bar
     const healthEl = document.getElementById('health-content');
     if (!healthEl) return;
 
-    // Update specific values in-place
     const items = healthEl.querySelectorAll('.health-item');
     items.forEach(item => {
       const text = item.textContent;
@@ -184,8 +216,9 @@ async function loadHardwareStatus() {
           <p><strong>Model:</strong> ${escapeHtml(hardware.gpu.gpu_name || 'Unknown')}</p>
           <p><strong>Driver:</strong> ${escapeHtml(hardware.gpu.driver_version || 'Unknown')}</p>
           <p><strong>VRAM:</strong> ${hardware.gpu.vram_total_mb ? (hardware.gpu.vram_total_mb / 1024).toFixed(1) : 'Unknown'} GB</p>
-          ${hardware.gpu.vram_used_mb ? `<p><strong>VRAM Used:</strong> ${(hardware.gpu.vram_used_mb / 1024).toFixed(1)} GB (${((hardware.gpu.vram_used_mb / hardware.gpu.vram_total_mb * 100) || 0).toFixed(1)}%)</p>` : ''}
-          ${hardware.gpu.temperature_c ? `<p><strong>Temp:</strong> ${hardware.gpu.temperature_c}°C</p>` : ''}
+          <p><strong>VRAM Used:</strong> <span data-live="gpu-vram">${hardware.gpu.vram_used_mb ? `${(hardware.gpu.vram_used_mb / 1024).toFixed(1)} GB (${((hardware.gpu.vram_used_mb / hardware.gpu.vram_total_mb * 100) || 0).toFixed(1)}%)` : '—'}</span></p>
+          <p><strong>Temp:</strong> <span data-live="gpu-temp">${hardware.gpu.temperature_c ? `${hardware.gpu.temperature_c}°C` : '—'}</span></p>
+          <p><strong>GPU Load:</strong> <span data-live="gpu-usage">—</span></p>
         </div>
       `
       : '<p>No GPU data available</p>';
@@ -234,8 +267,8 @@ async function loadHardwareStatus() {
       memoryHtml = `
         <div class="hw-item">
           <p><strong>Total:</strong> ${memoryData.total_gb || 'Unknown'} GB ${memoryData.memory_type ? `(${memoryData.memory_type})` : ''}</p>
-          <p><strong>Available:</strong> ${memoryData.available_gb || 'Unknown'} GB</p>
-          <p><strong>Used:</strong> ${memoryData.used_gb || 'Unknown'} GB (${memoryData.percent_used || 'Unknown'}%)</p>
+          <p><strong>Available:</strong> <span data-live="ram-available">${memoryData.available_gb || 'Unknown'}</span> GB</p>
+          <p><strong>Used:</strong> <span data-live="ram-used">${memoryData.used_gb || 'Unknown'} GB (${memoryData.percent_used || 'Unknown'}%)</span></p>
           ${sticksHtml}
         </div>
       `;
@@ -251,7 +284,7 @@ async function loadHardwareStatus() {
           ${cpuData.name ? `<p><strong>Model:</strong> ${escapeHtml(cpuData.name)}</p>` : ''}
           ${cpuData.architecture ? `<p><strong>Architecture:</strong> ${escapeHtml(cpuData.architecture)}</p>` : ''}
           <p><strong>Cores:</strong> ${cpuData.physical_cores || 'Unknown'} cores / ${cpuData.logical_processors || 'Unknown'} threads</p>
-          <p><strong>Usage:</strong> ${cpuData.usage_percent || 'Unknown'}%</p>
+          <p><strong>Usage:</strong> <span data-live="cpu-usage">${cpuData.usage_percent || 'Unknown'}%</span></p>
           <p><strong>Base Frequency:</strong> ${cpuData.frequency_mhz ? (cpuData.frequency_mhz / 1000).toFixed(2) : 'Unknown'} GHz</p>
           ${cpuData.max_frequency_mhz ? `<p><strong>Max Frequency:</strong> ${(cpuData.max_frequency_mhz / 1000).toFixed(2)} GHz</p>` : ''}
           ${cpuData.l3_cache_mb ? `<p><strong>L3 Cache:</strong> ${cpuData.l3_cache_mb} MB</p>` : ''}

@@ -73,6 +73,10 @@ function setupNavigation() {
         page.classList.add('active');
       }
 
+      // Stop live polling when leaving dashboard
+      if (typeof window.stopLiveStats === 'function') {
+        window.stopLiveStats();
+      }
       loadPageData(pageName);
     });
   });
