@@ -35,3 +35,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Screenshots (user-uploaded)
+data/screenshots/
+data/server.log

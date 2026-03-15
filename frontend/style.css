@@ -728,6 +728,61 @@ textarea {
     overflow-x: auto;
 }
 
+/* Screenshot Attach */
+
+.screenshot-area {
+    margin-bottom: 12px;
+}
+
+.screenshot-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.screenshot-label:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.screenshot-preview {
+    position: relative;
+    display: inline-block;
+    margin-bottom: 8px;
+}
+
+.screenshot-preview img {
+    max-width: 300px;
+    max-height: 200px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+}
+
+.screenshot-remove {
+    position: absolute;
+    top: -8px;
+    right: -8px;
+    width: 22px;
+    height: 22px;
+    background: var(--error);
+    color: white;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
 /* Loading States */
 
 .loading {

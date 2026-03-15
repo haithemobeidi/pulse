@@ -379,8 +379,51 @@ def analyze():
         if not description:
             return jsonify({'error': 'Description is required'}), 400
 
-        screenshot_path = data.get('screenshot_path')
         preferred_provider = data.get('provider', 'auto')  # auto, ollama, gemini, claude
+        include_context = data.get('include_context', False)
+
+        # Save screenshot if provided (base64 data URL)
+        screenshot_path = None
+        screenshot_data = data.get('screenshot')
+        if screenshot_data and screenshot_data.startswith('data:image'):
+            try:
+                import base64
+                # Parse data URL: data:image/png;base64,xxxxx
+                header, b64data = screenshot_data.split(',', 1)
+                ext = 'png' if 'png' in header else 'jpg'
+                filename = f"screenshot_{int(time.time())}.{ext}"
+                filepath = os.path.join(os.path.dirname(__file__), '..', 'data', 'screenshots', filename)
+                os.makedirs(os.path.dirname(filepath), exist_ok=True)
+                with open(filepath, 'wb') as f:
+                    f.write(base64.b64decode(b64data))
+                screenshot_path = filepath
+                logger.info(f"Screenshot saved: {filepath}")
+            except Exception as e:
+                logger.warning(f"Failed to save screenshot: {e}")
+
+        # Build recent context (timeline events + issues from last hour)
+        recent_context = ""
+        if include_context:
+            try:
+                recent_records = db.get_recent_reliability_records(days=1, limit=20)
+                recent_issues = db.execute(
+                    "SELECT * FROM issues ORDER BY timestamp DESC LIMIT 10"
+                ).fetchall()
+                if recent_records:
+                    recent_context += "\n\nRecent system events (last 24h):\n"
+                    for r in recent_records[:15]:
+                        recent_context += f"- [{r.get('event_time', '')}] {r.get('record_type', '')}: {r.get('source_name', '')} - {(r.get('event_message', '') or '')[:150]}\n"
+                if recent_issues:
+                    recent_context += "\nRecent issues:\n"
+                    for iss in recent_issues[:5]:
+                        recent_context += f"- [{iss['timestamp']}] {iss['issue_type']}: {iss['description'][:150]}\n"
+            except Exception as e:
+                logger.warning(f"Failed to build recent context: {e}")
+
+        # Append context to description
+        full_description = description
+        if recent_context:
+            full_description += recent_context
 
         # First collect fresh data so AI has current system state
         snapshot = Snapshot(
@@ -423,8 +466,8 @@ def analyze():
         )
         issue_id = db.create_issue(issue)
 
-        # Run AI analysis with provider preference
-        analysis = ai_analyze(db, description, screenshot_path, preferred_provider)
+        # Run AI analysis with provider preference + context
+        analysis = ai_analyze(db, full_description, screenshot_path, preferred_provider)
 
         # Store analysis in database
         ai_record = AiAnalysis(

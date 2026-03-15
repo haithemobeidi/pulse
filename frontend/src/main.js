@@ -150,8 +150,59 @@ function setupTroubleshoot() {
     }
   });
 
+  // Screenshot: file upload
+  const fileInput = document.getElementById('screenshot-file');
+  if (fileInput) {
+    fileInput.addEventListener('change', (e) => {
+      if (e.target.files && e.target.files[0]) {
+        handleScreenshot(e.target.files[0]);
+      }
+    });
+  }
+
+  // Screenshot: paste (Ctrl+V)
+  document.addEventListener('paste', (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        handleScreenshot(item.getAsFile());
+        return;
+      }
+    }
+  });
+
+  // Screenshot: remove
+  const removeBtn = document.getElementById('screenshot-remove');
+  if (removeBtn) {
+    removeBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      window._screenshotData = null;
+      document.getElementById('screenshot-preview').style.display = 'none';
+      document.getElementById('screenshot-label').style.display = '';
+    });
+  }
+
   // Check system scan status on load
   checkSystemStatus();
+}
+
+function handleScreenshot(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const dataUrl = e.target.result;
+    window._screenshotData = dataUrl;
+    const img = document.getElementById('screenshot-img');
+    const preview = document.getElementById('screenshot-preview');
+    const label = document.getElementById('screenshot-label');
+    img.src = dataUrl;
+    preview.style.display = 'inline-block';
+    label.style.display = 'none';
+    showNotification('Screenshot attached', 'success');
+  };
+  reader.readAsDataURL(file);
 }
 
 async function checkSystemStatus() {
@@ -229,10 +280,18 @@ async function runAnalysis() {
     console.log('[Pulse] Starting analysis...');
     const startTime = Date.now();
 
+    // Include screenshot if attached
+    const payload = { description, provider };
+    if (window._screenshotData) {
+      payload.screenshot = window._screenshotData;
+    }
+    // Tell backend to include recent context
+    payload.include_context = true;
+
     const resp = await fetch(`${API_BASE}/api/ai/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ description, provider }),
+      body: JSON.stringify(payload),
       signal: controller.signal,
     });
 
