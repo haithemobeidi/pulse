@@ -105,8 +105,59 @@ h1 {
     font-size: 20px;
 }
 
-/* Cards and Status Grid */
+/* Dashboard Layout */
 
+.dash-row {
+    display: grid;
+    gap: 15px;
+    margin-bottom: 15px;
+}
+
+.dash-row-3 {
+    grid-template-columns: repeat(3, 1fr);
+}
+
+.dash-row-2 {
+    grid-template-columns: repeat(2, 1fr);
+}
+
+.dash-row-full {
+    grid-template-columns: 1fr;
+}
+
+/* Health Summary Bar */
+
+.health-bar {
+    margin-bottom: 20px;
+    padding: 14px 20px;
+}
+
+.health-content {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    flex-wrap: wrap;
+}
+
+.health-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+}
+
+.health-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.health-dot.green { background: var(--success); }
+.health-dot.yellow { background: var(--warning); }
+.health-dot.red { background: var(--error); }
+
+/* Legacy grid (kept for non-dashboard pages) */
 .status-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
@@ -635,10 +686,7 @@ textarea {
 
 /* Hardware Detail Tables */
 
-.hw-card[data-component="memory"],
-.hw-card[data-component="storage"] {
-    grid-column: 1 / -1;
-}
+/* Cards in dash-row-full already span full width via grid */
 
 .hw-table {
     width: 100%;
@@ -720,7 +768,9 @@ textarea {
         font-size: 20px;
     }
 
-    .status-grid {
+    .status-grid,
+    .dash-row-3,
+    .dash-row-2 {
         grid-template-columns: 1fr;
     }
 

@@ -659,13 +659,23 @@ class HardwareCollector(BaseCollector):
             if not board and not bios:
                 return False
 
+            # Filter out junk placeholder values from WMI
+            def clean(val):
+                if not val:
+                    return None
+                v = val.strip()
+                junk = ["default string", "default", "x.x", "n/a", "na", "none", "to be filled", "not specified", "chassis serial number", "system serial number"]
+                if v.lower() in junk or not v:
+                    return None
+                return v
+
             component_data = json.dumps({
-                "manufacturer": (board.Manufacturer or "").strip() if board else None,
-                "product": (board.Product or "").strip() if board else None,
-                "version": (board.Version or "").strip() if board else None,
-                "serial": (board.SerialNumber or "").strip() if board else None,
-                "bios_vendor": (bios.Manufacturer or "").strip() if bios else None,
-                "bios_version": (bios.SMBIOSBIOSVersion or "").strip() if bios else None,
+                "manufacturer": clean(board.Manufacturer) if board else None,
+                "product": clean(board.Product) if board else None,
+                "version": clean(board.Version) if board else None,
+                "serial": clean(board.SerialNumber) if board else None,
+                "bios_vendor": clean(bios.Manufacturer) if bios else None,
+                "bios_version": clean(bios.SMBIOSBIOSVersion) if bios else None,
                 "bios_date": (bios.ReleaseDate or "").split(".")[0] if bios and bios.ReleaseDate else None,
             })
 
@@ -700,13 +710,24 @@ class HardwareCollector(BaseCollector):
                         interface = (disk.InterfaceType or "").strip()
                         model = (disk.Model or "").strip()
 
+                        model_lower = model.lower()
+                        # Known NVMe/SSD model keywords (check before media_type fallback)
+                        nvme_keywords = ["nvme", "mp600", "mp700", "980 pro", "970 evo", "sn850",
+                                         "sn770", "a80", "p5 plus", "firecuda", "rocket", "wd_black"]
+                        ssd_keywords = ["ssd", "sandisk", "crucial", "samsung ssd", "wd blue sa",
+                                        "kingston", "inland", "adata"]
+
                         drive_type = "Unknown"
-                        if "nvme" in model.lower() or "nvme" in interface.lower():
+                        if any(kw in model_lower for kw in nvme_keywords) or "nvme" in interface.lower():
                             drive_type = "NVMe SSD"
-                        elif "ssd" in model.lower() or "solid" in media_type.lower():
+                        elif any(kw in model_lower for kw in ssd_keywords) or "solid" in media_type.lower():
                             drive_type = "SSD"
-                        elif "hdd" in model.lower() or "fixed" in media_type.lower():
+                        elif "hdd" in model_lower or any(kw in model_lower for kw in ["barracuda", "ironwolf", "caviar", "toshiba dt", "toshiba hdw"]):
                             drive_type = "HDD"
+                        elif "fixed" in media_type.lower():
+                            # Fallback: WMI says "Fixed hard disk media" for everything
+                            # Assume SSD if interface is SCSI/IDE (modern NVMe/SATA show as these)
+                            drive_type = "SSD"
 
                         drives.append({
                             "model": model,

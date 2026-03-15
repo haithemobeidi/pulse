@@ -14,10 +14,11 @@ export async function initDashboard() {
   }
 
   // Then load data
-  await Promise.all([
-    loadHardwareStatus(),
-    loadRecentIssues(),
-  ]);
+  const hwData = await loadHardwareStatus();
+  await loadRecentIssues();
+
+  // Build health summary from loaded data
+  if (hwData) buildHealthSummary(hwData);
 }
 
 function setupHardwareCardClicks() {
@@ -127,11 +128,11 @@ async function loadHardwareStatus() {
     const hardware = await api.getCurrentHardware();
 
     if (hardware.status === 'no_data') {
-      document.getElementById('gpu-status').innerHTML = '<p>No data collected yet. Click "Collect Data" to start.</p>';
-      document.getElementById('monitors-status').innerHTML = '<p>No data collected yet. Click "Collect Data" to start.</p>';
-      document.getElementById('memory-status').innerHTML = '<p>No data collected yet. Click "Collect Data" to start.</p>';
-      document.getElementById('cpu-status').innerHTML = '<p>No data collected yet. Click "Collect Data" to start.</p>';
-      return;
+      document.getElementById('gpu-status').innerHTML = '<p>No data yet. Click "Collect Data".</p>';
+      document.getElementById('monitors-status').innerHTML = '<p>No data yet. Click "Collect Data".</p>';
+      document.getElementById('memory-status').innerHTML = '<p>No data yet. Click "Collect Data".</p>';
+      document.getElementById('cpu-status').innerHTML = '<p>No data yet. Click "Collect Data".</p>';
+      return null;
     }
 
     // GPU Status
@@ -304,11 +305,73 @@ async function loadHardwareStatus() {
       }).join('') + '</div>';
     }
     document.getElementById('network-status').innerHTML = netHtml;
+
+    return hardware;
   } catch (error) {
     console.error('Failed to load hardware status:', error);
     document.getElementById('gpu-status').innerHTML = `<p class="error">Error: ${error}</p>`;
     document.getElementById('monitors-status').innerHTML = `<p class="error">Error: ${error}</p>`;
+    return null;
   }
+}
+
+function buildHealthSummary(hardware) {
+  const container = document.getElementById('health-content');
+  if (!container) return;
+
+  const items = [];
+
+  // GPU temp
+  if (hardware.gpu && hardware.gpu.temperature_c) {
+    const temp = hardware.gpu.temperature_c;
+    const dot = temp > 85 ? 'red' : temp > 70 ? 'yellow' : 'green';
+    items.push(`<span class="health-item"><span class="health-dot ${dot}"></span>GPU ${temp}°C</span>`);
+  }
+
+  // Memory usage
+  const memData = hardware.memory ? JSON.parse(hardware.memory) : null;
+  if (memData) {
+    const pct = memData.percent_used || 0;
+    const dot = pct > 90 ? 'red' : pct > 75 ? 'yellow' : 'green';
+    items.push(`<span class="health-item"><span class="health-dot ${dot}"></span>RAM ${pct}% used (${memData.used_gb}/${memData.total_gb} GB)</span>`);
+  }
+
+  // CPU usage
+  const cpuData = hardware.cpu ? JSON.parse(hardware.cpu) : null;
+  if (cpuData && cpuData.usage_percent !== undefined) {
+    const pct = cpuData.usage_percent;
+    const dot = pct > 90 ? 'red' : pct > 70 ? 'yellow' : 'green';
+    items.push(`<span class="health-item"><span class="health-dot ${dot}"></span>CPU ${pct}%</span>`);
+  }
+
+  // Storage - check for nearly full drives
+  const storageData = hardware.storage ? JSON.parse(hardware.storage) : null;
+  if (storageData && storageData.partitions) {
+    const full = storageData.partitions.filter(p => p.percent_used > 90);
+    const warn = storageData.partitions.filter(p => p.percent_used > 75 && p.percent_used <= 90);
+    if (full.length > 0) {
+      items.push(`<span class="health-item"><span class="health-dot red"></span>${full.length} drive(s) nearly full</span>`);
+    } else if (warn.length > 0) {
+      items.push(`<span class="health-item"><span class="health-dot yellow"></span>${warn.length} drive(s) >75% used</span>`);
+    } else {
+      items.push(`<span class="health-item"><span class="health-dot green"></span>${storageData.partitions.length} drives healthy</span>`);
+    }
+  }
+
+  // Monitors
+  if (hardware.monitor_count) {
+    items.push(`<span class="health-item"><span class="health-dot green"></span>${hardware.monitor_count} monitor(s)</span>`);
+  }
+
+  // Network
+  const netData = hardware.network ? JSON.parse(hardware.network) : null;
+  if (netData && netData.adapters) {
+    const connected = netData.adapters.filter(a => a.status === 'Connected').length;
+    const dot = connected > 0 ? 'green' : 'red';
+    items.push(`<span class="health-item"><span class="health-dot ${dot}"></span>${connected} network(s) connected</span>`);
+  }
+
+  container.innerHTML = items.join('');
 }
 
 async function loadRecentIssues() {
