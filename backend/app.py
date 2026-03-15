@@ -102,6 +102,49 @@ def status():
 
 
 # ============================================================================
+# Live Stats Endpoint (lightweight, no database writes)
+# ============================================================================
+
+@app.route('/api/live-stats')
+def get_live_stats():
+    """Get real-time CPU, RAM, GPU stats without running full collectors"""
+    stats = {}
+
+    try:
+        import psutil
+        stats['cpu_percent'] = psutil.cpu_percent(interval=0.5)
+        mem = psutil.virtual_memory()
+        stats['ram_percent'] = mem.percent
+        stats['ram_used_gb'] = round(mem.used / (1024**3), 1)
+        stats['ram_total_gb'] = round(mem.total / (1024**3), 1)
+    except Exception:
+        pass
+
+    try:
+        from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo, nvmlDeviceGetTemperature, nvmlDeviceGetUtilizationRates, nvmlShutdown
+        nvmlInit()
+        handle = nvmlDeviceGetHandleByIndex(0)
+        mem_info = nvmlDeviceGetMemoryInfo(handle)
+        stats['gpu_vram_used_mb'] = mem_info.used // (1024 * 1024)
+        stats['gpu_vram_total_mb'] = mem_info.total // (1024 * 1024)
+        stats['gpu_vram_percent'] = round(mem_info.used / mem_info.total * 100, 1)
+        try:
+            stats['gpu_temp'] = nvmlDeviceGetTemperature(handle, 0)
+        except Exception:
+            pass
+        try:
+            util = nvmlDeviceGetUtilizationRates(handle)
+            stats['gpu_usage'] = util.gpu
+        except Exception:
+            pass
+        nvmlShutdown()
+    except Exception:
+        pass
+
+    return jsonify(stats)
+
+
+# ============================================================================
 # Hardware Endpoints
 # ============================================================================
 

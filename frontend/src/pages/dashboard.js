@@ -19,6 +19,48 @@ export async function initDashboard() {
 
   // Build health summary from loaded data
   if (hwData) buildHealthSummary(hwData);
+
+  // Start live stats polling (every 5 seconds)
+  startLiveStats();
+}
+
+let liveInterval = null;
+
+function startLiveStats() {
+  if (liveInterval) clearInterval(liveInterval);
+  updateLiveStats(); // immediate first update
+  liveInterval = setInterval(updateLiveStats, 5000);
+}
+
+async function updateLiveStats() {
+  try {
+    const resp = await fetch('http://localhost:5000/api/live-stats');
+    const stats = await resp.json();
+
+    // Update health bar items if they exist
+    const healthEl = document.getElementById('health-content');
+    if (!healthEl) return;
+
+    // Update specific values in-place
+    const items = healthEl.querySelectorAll('.health-item');
+    items.forEach(item => {
+      const text = item.textContent;
+      if (text.includes('GPU') && text.includes('°C') && stats.gpu_temp !== undefined) {
+        const dot = stats.gpu_temp > 85 ? 'red' : stats.gpu_temp > 70 ? 'yellow' : 'green';
+        item.innerHTML = `<span class="health-dot ${dot}"></span>GPU ${stats.gpu_temp}°C`;
+      }
+      if (text.includes('CPU') && stats.cpu_percent !== undefined) {
+        const dot = stats.cpu_percent > 90 ? 'red' : stats.cpu_percent > 70 ? 'yellow' : 'green';
+        item.innerHTML = `<span class="health-dot ${dot}"></span>CPU ${stats.cpu_percent}%`;
+      }
+      if (text.includes('RAM') && stats.ram_percent !== undefined) {
+        const dot = stats.ram_percent > 90 ? 'red' : stats.ram_percent > 75 ? 'yellow' : 'green';
+        item.innerHTML = `<span class="health-dot ${dot}"></span>RAM ${stats.ram_percent}% (${stats.ram_used_gb}/${stats.ram_total_gb} GB)`;
+      }
+    });
+  } catch (e) {
+    // Silently fail — don't spam errors for polling
+  }
 }
 
 function setupHardwareCardClicks() {
