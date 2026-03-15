@@ -57,6 +57,13 @@ class HardwareCollector(BaseCollector):
         Returns:
             True if any data was collected successfully
         """
+        # Initialize COM for this thread (required for WMI in threaded contexts)
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()
+        except Exception:
+            pass
+
         collected = False
 
         # Collect GPU data
