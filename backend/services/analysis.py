@@ -51,7 +51,7 @@ def _build_recent_context(db):
     return context
 
 
-def run_analysis(db, description, screenshot_data=None, provider='auto', include_context=False):
+def run_analysis(db, description, screenshot_data=None, provider='auto', include_context=False, session_id=None):
     """
     Full analysis flow: collect data, run AI analysis, store results.
     Returns analysis dict with issue_id, snapshot_id, analysis_id, suggested_fixes.
@@ -68,6 +68,16 @@ def run_analysis(db, description, screenshot_data=None, provider='auto', include
         recent_context = _build_recent_context(db)
         if recent_context:
             full_description += recent_context
+
+    # Inject session memory into the description for the AI
+    if session_id:
+        try:
+            from backend.services.memory import build_memory_prompt
+            memory_context = build_memory_prompt(db, session_id)
+            if memory_context:
+                full_description = full_description + "\n\n" + memory_context
+        except Exception as e:
+            logger.warning(f"Could not inject session memory: {e}")
 
     # Collect fresh system data
     emit_analysis_progress('collecting', 'running', 'Scanning system...')

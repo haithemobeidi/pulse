@@ -21,14 +21,28 @@ RULES:
 4. Be conversational — not overly formal or technical.
 5. If suggesting commands or steps, be specific and exact.
 6. Keep responses concise but thorough.
+7. If session memory shows abnormal hardware readings, proactively mention them and ask clarifying questions (e.g., "I notice your GPU usage is at 80% — are you running a game right now?").
+8. NEVER suggest a fix that session memory shows has already been tried and failed.
 
 Respond in plain text (not JSON). Use markdown formatting for readability."""
 
 
-def _build_system_context(db, last_message_content):
-    """Build system hardware context string for chat, using adaptive context."""
+def _build_system_context(db, last_message_content, session_id=None):
+    """Build system hardware context string for chat, using adaptive context + session memory."""
+    context_parts = []
+
+    # Session memory (highest priority — goes first)
+    if session_id:
+        try:
+            from backend.services.memory import build_memory_prompt
+            memory_prompt = build_memory_prompt(db, session_id)
+            if memory_prompt:
+                context_parts.append(memory_prompt)
+        except Exception as e:
+            logger.warning(f"Could not build memory context: {e}")
+
+    # Hardware context
     try:
-        # Try adaptive context first
         from backend.services.context import build_adaptive_context
         context = build_adaptive_context(db, last_message_content, budget_tokens=800)
         hw = context.get('hardware', {})
@@ -36,9 +50,9 @@ def _build_system_context(db, last_message_content):
         cpu_data = hw.get('cpu', {}).get('component_data', {})
         mem_data = hw.get('memory', {}).get('component_data', {})
 
-        parts = []
+        hw_parts = []
         if gpu:
-            parts.append(f"GPU: {gpu.get('gpu_name', '?')} (Driver: {gpu.get('driver_version', '?')})")
+            hw_parts.append(f"GPU: {gpu.get('gpu_name', '?')} (Driver: {gpu.get('driver_version', '?')})")
 
         if isinstance(cpu_data, str):
             try:
@@ -46,7 +60,7 @@ def _build_system_context(db, last_message_content):
             except Exception:
                 cpu_data = {}
         if isinstance(cpu_data, dict) and cpu_data.get('name'):
-            parts.append(f"CPU: {cpu_data['name']}")
+            hw_parts.append(f"CPU: {cpu_data['name']}")
 
         if isinstance(mem_data, str):
             try:
@@ -54,23 +68,25 @@ def _build_system_context(db, last_message_content):
             except Exception:
                 mem_data = {}
         if isinstance(mem_data, dict) and mem_data.get('total_gb'):
-            parts.append(f"RAM: {mem_data['total_gb']}GB {mem_data.get('memory_type', '')}")
+            hw_parts.append(f"RAM: {mem_data['total_gb']}GB {mem_data.get('memory_type', '')}")
 
-        # Add style guide to chat context
+        if hw_parts:
+            context_parts.append("User's system: " + " | ".join(hw_parts))
+
+        # Style guide
         style_guide = context.get('style_guide')
-        style_suffix = ""
         if style_guide:
-            style_suffix = f"\n\nStyle guidelines: {style_guide}"
+            context_parts.append(f"Style guidelines: {style_guide}")
 
-        if parts:
-            return "\n\nUser's system: " + " | ".join(parts) + style_suffix
-        return style_suffix
     except Exception as e:
         logger.warning(f"Could not build chat context: {e}")
+
+    if context_parts:
+        return "\n\n" + "\n\n".join(context_parts)
     return ""
 
 
-def handle_chat(db, messages, provider='ollama', screenshot_data=None):
+def handle_chat(db, messages, provider='ollama', screenshot_data=None, session_id=None):
     """
     Handle a follow-up chat message.
     Returns dict with response, provider, model.
@@ -78,8 +94,8 @@ def handle_chat(db, messages, provider='ollama', screenshot_data=None):
     if not messages:
         raise ValueError('No messages provided')
 
-    # Build system prompt with hardware context
-    system_context = _build_system_context(db, messages[-1].get('content', ''))
+    # Build system prompt with hardware context + session memory
+    system_context = _build_system_context(db, messages[-1].get('content', ''), session_id=session_id)
     prompt = CHAT_SYSTEM_PROMPT + system_context
 
     # Handle screenshot

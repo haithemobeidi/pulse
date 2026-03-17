@@ -562,6 +562,18 @@ class Database:
             generated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_style_guides_scope ON style_guides(scope);
+
+        -- Session Memory: Per-session key-value store for working memory
+        CREATE TABLE IF NOT EXISTS session_memory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(session_id, key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_memory_session ON session_memory(session_id);
         """
 
         # Execute schema creation
@@ -1035,6 +1047,58 @@ class Database:
         """Get fixes currently in holding state."""
         cursor = self.execute(
             "SELECT * FROM suggested_fixes WHERE status = 'holding'"
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    # ========================================================================
+    # Session Memory CRUD
+    # ========================================================================
+
+    def get_session_memory(self, session_id: str) -> Dict[str, str]:
+        """Get all memory entries for a session as a dict."""
+        cursor = self.execute(
+            "SELECT key, value FROM session_memory WHERE session_id = ? ORDER BY updated_at DESC",
+            (session_id,)
+        )
+        return {row['key']: row['value'] for row in cursor.fetchall()}
+
+    def set_session_memory(self, session_id: str, key: str, value: str):
+        """Set a session memory entry (insert or update)."""
+        self.execute(
+            """INSERT INTO session_memory (session_id, key, value, updated_at)
+               VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(session_id, key)
+               DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP""",
+            (session_id, key, value)
+        )
+        self.commit()
+
+    def delete_session_memory(self, session_id: str, key: str = None):
+        """Delete a specific key or all memory for a session."""
+        if key:
+            self.execute(
+                "DELETE FROM session_memory WHERE session_id = ? AND key = ?",
+                (session_id, key)
+            )
+        else:
+            self.execute(
+                "DELETE FROM session_memory WHERE session_id = ?",
+                (session_id,)
+            )
+        self.commit()
+
+    def get_all_sessions(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get a list of sessions with their memory entry count and last activity."""
+        cursor = self.execute(
+            """SELECT session_id,
+                      COUNT(*) as entry_count,
+                      MAX(updated_at) as last_activity,
+                      MIN(created_at) as started_at
+               FROM session_memory
+               GROUP BY session_id
+               ORDER BY MAX(updated_at) DESC
+               LIMIT ?""",
+            (limit,)
         )
         return [dict(row) for row in cursor.fetchall()]
 

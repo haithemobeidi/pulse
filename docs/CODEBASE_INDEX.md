@@ -5,14 +5,14 @@
 | File | Purpose | Status |
 |------|---------|--------|
 | `backend/app.py` | Flask server - blueprint registration, SSE endpoint, static serving, startup collection, scheduler | Active |
-| `backend/database.py` | SQLite schema (16 tables), models, CRUD operations, migrations | Active |
+| `backend/database.py` | SQLite schema (17 tables), models, CRUD operations, migrations, session memory CRUD | Active |
 | `backend/collectors/base.py` | Base collector class (abstract) | Active |
 | `backend/collectors/hardware.py` | GPU, CPU, Memory, Motherboard, Storage, Network collectors (WMI + psutil) | Active |
 | `backend/collectors/monitors.py` | Monitor detection via EDID/WmiMonitorID | Active |
 | `backend/collectors/reliability.py` | Windows Reliability Monitor (Win32_ReliabilityRecords) | Active |
 | `backend/ai/__init__.py` | AI module init | Active |
 | `backend/ai/providers.py` | Multi-provider AI (Ollama/Gemini/Claude) with auto-failover + conversation history support | Active |
-| `backend/ai/reasoning.py` | AI reasoning engine - adaptive context, similar fixes injection, style guide injection | Active |
+| `backend/ai/reasoning.py` | AI reasoning engine - adaptive context, similar fixes, style guide, web search injection | Active |
 | `backend/ai/learning.py` | Learning engine - confidence decay, pattern detection, fix effectiveness, recommendations | Active |
 | `backend/utils/powershell.py` | PowerShell bridge for WSL→Windows queries | Active |
 
@@ -20,7 +20,7 @@
 | File | Purpose | Status |
 |------|---------|--------|
 | `backend/routes/__init__.py` | Blueprint init, server start timestamp | Active |
-| `backend/routes/ai.py` | AI analysis and chat endpoints | Active |
+| `backend/routes/ai.py` | AI analysis, chat, session management endpoints | Active |
 | `backend/routes/collection.py` | Data collection trigger endpoint | Active |
 | `backend/routes/corrections.py` | User correction capture and stats | Active |
 | `backend/routes/fixes.py` | Fix approval, execution, outcome recording | Active |
@@ -45,6 +45,8 @@
 | `backend/services/screenshots.py` | Screenshot saving and description | Active |
 | `backend/services/state_machine.py` | Fix state machine: pending→approved→executed→holding→resolved/failed | Active |
 | `backend/services/style_learning.py` | Style guide generation from user corrections | Active |
+| `backend/services/memory.py` | Session working memory - per-session key-value store, rule-based fact extraction, hardware anomaly detection, prompt building | Active |
+| `backend/services/web_search.py` | DuckDuckGo web search - hardware-aware query building, HTML parsing, prompt injection | Active |
 
 ## Frontend Files
 
@@ -58,7 +60,7 @@
 | `frontend/src/pages/dashboard.js` | Dashboard - 7 hw cards, health summary, live stats polling | Active |
 | `frontend/src/pages/issues.js` | Issues list page | Active |
 | `frontend/src/pages/timeline.js` | Timeline - color-coded, filterable (system/crash/user/AI categories) | Active |
-| `frontend/src/pages/troubleshoot.js` | Chat UI, screenshot handling, fix approval, correction editing, SSE progress | Active |
+| `frontend/src/pages/troubleshoot.js` | Chat UI, screenshot handling, fix approval, correction editing, SSE progress, session management, stop button | Active |
 | `frontend/src/pages/learning.js` | Learning dashboard - patterns, fixes, corrections, style guides | Active |
 | `frontend/src/components/data-collection.js` | Collect Data button with per-collector SSE progress | Active |
 | `frontend/src/components/heartbeat.js` | Server heartbeat / auto-reload detection | Active |
@@ -127,6 +129,7 @@
 | `embeddings` | Vector embeddings for similarity search |
 | `corrections` | User edits to AI output for style learning |
 | `style_guides` | Generated style guides from correction patterns |
+| `session_memory` | Per-session working memory key-value store |
 
 ## Architecture
 
@@ -149,7 +152,9 @@ Flask Server (backend/app.py) — threaded
     |   |-- fixes — state machine lifecycle
     |   |-- scheduler — background holding period checks
     |   |-- events — SSE broadcasting
-    |   +-- style_learning — correction → style guide generation
+    |   |-- style_learning — correction → style guide generation
+    |   |-- memory — session working memory (H3-inspired scratch)
+    |   +-- web_search — DuckDuckGo search for current issue info
     |-- Collectors (read-only, parallel execution)
     |   |-- Hardware (GPU, CPU, Memory, Motherboard, Storage, Network)
     |   |-- Monitors (EDID via WmiMonitorID)
@@ -164,7 +169,7 @@ Flask Server (backend/app.py) — threaded
         |-- State machine (pending→approved→executed→holding→resolved)
         +-- Correction learning (3+ edits → style guide)
     |
-SQLite (data/system.db) - 16 tables
+SQLite (data/system.db) - 17 tables
 ```
 
 ## Key Technical Details
@@ -180,5 +185,11 @@ SQLite (data/system.db) - 16 tables
 - **Similarity Scoring**: `score = cosine_similarity * 0.7 + decayed_confidence * 0.3`
 - **User Hardware**: RTX 5090 (32GB), Ryzen 9 9950X3D, 96GB DDR5-6000 Corsair, AM5, AW3425DW + LG ULTRAGEAR
 
+## Planning Documents
+
+| File | Purpose |
+|------|---------|
+| `docs/MULTI_AGENT_PLAN.md` | Multi-agent intelligence plan (4 phases: Memory, Routing, Builder Agent, Resolution Paths) |
+
 ## Last Updated
-2026-03-15
+2026-03-17

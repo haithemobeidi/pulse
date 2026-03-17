@@ -10,12 +10,29 @@ import { connectSSE, disconnectSSE } from '../api/events.js';
 // Chat state
 let chatHistory = [];
 let isFirstMessage = true;
+let currentSessionId = null;
+let currentAbortController = null;
+
+async function startNewSession() {
+  try {
+    const resp = await fetch(`${API_BASE}/api/ai/sessions/new`, { method: 'POST' });
+    const data = await resp.json();
+    currentSessionId = data.session_id;
+    console.log(`[Pulse] New session: ${currentSessionId}`);
+  } catch (e) {
+    console.warn('[Pulse] Failed to create session:', e);
+    currentSessionId = null;
+  }
+}
 
 export function setupTroubleshoot() {
   const sendBtn = document.getElementById('analyze-btn');
   const input = document.getElementById('problem-input');
 
   if (!sendBtn || !input) return;
+
+  // Create initial session
+  startNewSession();
 
   sendBtn.addEventListener('click', () => sendMessage());
   input.addEventListener('keydown', (e) => {
@@ -38,6 +55,8 @@ export function setupTroubleshoot() {
       chatHistory = [];
       isFirstMessage = true;
       window._screenshotData = null;
+      currentSessionId = null;
+      startNewSession();
       const area = document.getElementById('screenshot-area');
       if (area) area.style.display = 'none';
       document.getElementById('chat-messages').innerHTML = `
@@ -209,7 +228,28 @@ async function sendMessage() {
   window.addEventListener('pulse:analysis_progress', progressHandler);
   window.addEventListener('pulse:scan_progress', progressHandler);
 
-  sendBtn.disabled = true;
+  // Create AbortController for cancellation
+  currentAbortController = new AbortController();
+  const { signal } = currentAbortController;
+
+  // Show stop button, hide send button
+  sendBtn.style.display = 'none';
+  let stopBtn = document.getElementById('stop-btn');
+  if (!stopBtn) {
+    stopBtn = document.createElement('button');
+    stopBtn.id = 'stop-btn';
+    stopBtn.className = 'btn';
+    stopBtn.innerHTML = '&#9632; Stop';
+    stopBtn.style.cssText = 'background:#f38ba8;color:#1e1e2e;border:none;padding:8px 16px;border-radius:8px;cursor:pointer;font-weight:600;font-size:14px;';
+    sendBtn.parentNode.insertBefore(stopBtn, sendBtn.nextSibling);
+  }
+  stopBtn.style.display = '';
+  stopBtn.onclick = () => {
+    if (currentAbortController) {
+      currentAbortController.abort();
+      currentAbortController = null;
+    }
+  };
 
   try {
     let responseText = '';
@@ -219,6 +259,7 @@ async function sendMessage() {
       isFirstMessage = false;
 
       const payload = { description: text, provider, include_context: true };
+      if (currentSessionId) payload.session_id = currentSessionId;
       if (window._screenshotData) {
         payload.screenshot = window._screenshotData;
         window._screenshotData = null;
@@ -229,6 +270,7 @@ async function sendMessage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        signal,
       });
 
       const analysis = await resp.json();
@@ -237,12 +279,16 @@ async function sendMessage() {
         throw new Error(analysis.error);
       }
 
+      // Track session ID from response
+      if (analysis.session_id) currentSessionId = analysis.session_id;
+
       responseText = formatAnalysisAsChat(analysis);
       providerUsed = `${analysis.provider || '?'} (${analysis.model || '?'})`;
       chatHistory.push({ role: 'assistant', content: responseText });
 
     } else {
       const chatPayload = { messages: chatHistory, provider };
+      if (currentSessionId) chatPayload.session_id = currentSessionId;
       if (window._screenshotData) {
         chatPayload.screenshot = window._screenshotData;
         window._screenshotData = null;
@@ -252,6 +298,7 @@ async function sendMessage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(chatPayload),
+        signal,
       });
 
       const data = await resp.json();
@@ -267,13 +314,24 @@ async function sendMessage() {
 
   } catch (error) {
     typingEl.remove();
-    addChatMessage('system', `Error: ${error.message}`);
-    console.error('[Pulse] Chat error:', error);
+    if (error.name === 'AbortError') {
+      // Remove the user message from history since we cancelled
+      chatHistory.pop();
+      addChatMessage('system', 'Cancelled.');
+    } else {
+      addChatMessage('system', `Error: ${error.message}`);
+      console.error('[Pulse] Chat error:', error);
+    }
   } finally {
     // Clean up SSE progress listeners
     window.removeEventListener('pulse:analysis_progress', progressHandler);
     window.removeEventListener('pulse:scan_progress', progressHandler);
+    currentAbortController = null;
+    // Restore send button, hide stop button
+    sendBtn.style.display = '';
     sendBtn.disabled = false;
+    const stopBtnEl = document.getElementById('stop-btn');
+    if (stopBtnEl) stopBtnEl.style.display = 'none';
     input.focus();
   }
 }

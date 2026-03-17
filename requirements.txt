@@ -6,3 +6,4 @@ wmi==1.5.1
 nvidia-ml-py==12.535.108
 pywin32>=311
 requests>=2.31.0
+ddgs>=8.0.0

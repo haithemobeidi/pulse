@@ -382,25 +382,36 @@ def analyze_issue(
     if context.get('style_guide'):
         style_instruction = f"\n\nSTYLE GUIDELINES (follow these when writing your response):\n{context['style_guide']}"
 
+    # Web search for current information about the problem
+    web_search_section = ""
+    try:
+        from backend.services.web_search import search_for_issue
+        web_context = search_for_issue(db, issue_description)
+        if web_context:
+            web_search_section = f"\n\n{web_context}"
+            logger.info(f"Web search context injected ({len(web_context)} chars)")
+    except Exception as e:
+        logger.warning(f"Web search failed (non-critical): {e}")
+
     user_message = f"""USER'S PROBLEM (this is what you should focus on):
 {issue_description}
 
 SYSTEM HARDWARE:
 {chr(10).join(hw_summary) if hw_summary else 'No hardware data available'}
 
-RECENT SYSTEM EVENTS (use as supporting evidence only — do NOT diagnose these unless the user asked about them):
+RECENT SYSTEM EVENTS (use as supporting evidence only -- do NOT diagnose these unless the user asked about them):
 {rel_summary if rel_summary else 'No recent events'}
 
 RECENT ISSUES REPORTED BY USER:
 {issues_summary if issues_summary else 'No recent issues'}
 
-SIMILAR PAST FIXES (fixes that worked for similar problems — reference these if relevant):
+SIMILAR PAST FIXES (fixes that worked for similar problems -- reference these if relevant):
 {similar_fixes_summary if similar_fixes_summary else 'No similar past fixes yet'}
 
 LEARNED PATTERNS (confidence-weighted insights from past diagnoses):
-{patterns_summary if patterns_summary else 'No patterns learned yet'}{style_instruction}
+{patterns_summary if patterns_summary else 'No patterns learned yet'}{web_search_section}{style_instruction}
 
-Remember: Focus on what the user described. The system data is context, not the problem. Respond ONLY with valid JSON."""
+Remember: Focus on what the user described. The system data is context, not the problem. If web search results contain specific information about the user's hardware or driver version, USE that information to give targeted advice rather than generic suggestions. Respond ONLY with valid JSON."""
 
     try:
         # If screenshot provided and using a non-vision model (Ollama),
