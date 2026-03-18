@@ -41,6 +41,15 @@ def _build_system_context(db, last_message_content, session_id=None):
         except Exception as e:
             logger.warning(f"Could not build memory context: {e}")
 
+    # Living brain context (learned facts, knowledge gaps)
+    try:
+        from backend.services.brain import build_brain_context
+        brain_context = build_brain_context(db, last_message_content, session_id)
+        if brain_context:
+            context_parts.append(brain_context)
+    except Exception as e:
+        logger.warning(f"Could not build brain context: {e}")
+
     # Hardware context
     try:
         from backend.services.context import build_adaptive_context

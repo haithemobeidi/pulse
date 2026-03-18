@@ -52,19 +52,30 @@ export function setupTroubleshoot() {
   const newChatBtn = document.getElementById('new-chat-btn');
   if (newChatBtn) {
     newChatBtn.addEventListener('click', () => {
-      chatHistory = [];
-      isFirstMessage = true;
-      window._screenshotData = null;
-      currentSessionId = null;
-      startNewSession();
-      const area = document.getElementById('screenshot-area');
-      if (area) area.style.display = 'none';
-      document.getElementById('chat-messages').innerHTML = `
-        <div class="chat-welcome">
-          <h2>What's wrong with your PC?</h2>
-          <p style="color:var(--text-secondary);">Describe your problem below. I'll scan your system and help diagnose it.</p>
-        </div>`;
+      // If there was an active session with messages, ask for outcome before resetting
+      if (currentSessionId && !isFirstMessage) {
+        promptForOutcome(currentSessionId, () => {
+          resetChat();
+        });
+        return; // Wait for outcome click before resetting
+      }
+      resetChat();
     });
+  }
+
+  function resetChat() {
+    chatHistory = [];
+    isFirstMessage = true;
+    window._screenshotData = null;
+    currentSessionId = null;
+    startNewSession();
+    const area = document.getElementById('screenshot-area');
+    if (area) area.style.display = 'none';
+    document.getElementById('chat-messages').innerHTML = `
+      <div class="chat-welcome">
+        <h2>What's wrong with your PC?</h2>
+        <p style="color:var(--text-secondary);">Describe your problem below. I'll scan your system and help diagnose it.</p>
+      </div>`;
   }
 
   // Screenshot: file upload
@@ -528,12 +539,61 @@ async function recordOutcome(fixId, resolved, statusDiv) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ resolved, notes: '' }),
     });
+
+    // Also record session outcome so the brain learns
+    if (currentSessionId) {
+      await fetch(`${API_BASE}/api/ai/sessions/${currentSessionId}/outcome`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ outcome: resolved ? 'resolved' : 'unresolved' }),
+      });
+    }
+
     statusDiv.innerHTML = resolved
-      ? '<span style="color:#a6e3a1;">Marked as resolved. Pulse will remember this fix worked!</span>'
-      : '<span style="color:#f9e2af;">Noted. Pulse will learn from this for next time.</span>';
+      ? '<span style="color:#a6e3a1;">Marked as resolved. Pulse learned from this!</span>'
+      : '<span style="color:#f9e2af;">Noted. Pulse will remember this didn\'t work.</span>';
   } catch (error) {
     statusDiv.innerHTML = `<span style="color:#f38ba8;">Error recording outcome: ${error.message}</span>`;
   }
+}
+
+function promptForOutcome(sessionId, onComplete) {
+  const chatMessages = document.getElementById('chat-messages');
+  const promptEl = document.createElement('div');
+  promptEl.className = 'chat-msg system';
+  promptEl.style.cssText = 'padding:16px;margin:12px 0;border:1px solid #45475a;border-radius:8px;background:#1e1e2e;';
+  promptEl.innerHTML = `
+    <div style="margin-bottom:10px;color:#cdd6f4;font-size:15px;font-weight:600;">Was your issue resolved?</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="outcome-btn" data-outcome="resolved" style="padding:8px 16px;font-size:13px;background:#a6e3a1;color:#1e1e2e;border:none;border-radius:6px;cursor:pointer;font-weight:600;">Yes, fixed!</button>
+      <button class="outcome-btn" data-outcome="partial" style="padding:8px 16px;font-size:13px;background:#f9e2af;color:#1e1e2e;border:none;border-radius:6px;cursor:pointer;font-weight:600;">Partially</button>
+      <button class="outcome-btn" data-outcome="unresolved" style="padding:8px 16px;font-size:13px;background:#f38ba8;color:#1e1e2e;border:none;border-radius:6px;cursor:pointer;font-weight:600;">No</button>
+      <button class="outcome-btn" data-outcome="skip" style="padding:8px 16px;font-size:13px;background:#45475a;color:#cdd6f4;border:none;border-radius:6px;cursor:pointer;">Skip</button>
+    </div>
+    <div style="margin-top:8px;font-size:12px;color:#585b70;">This helps Pulse learn and give better advice next time.</div>
+  `;
+  chatMessages.appendChild(promptEl);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+
+  promptEl.querySelectorAll('.outcome-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const outcome = btn.dataset.outcome;
+      if (outcome !== 'skip') {
+        try {
+          await fetch(`${API_BASE}/api/ai/sessions/${sessionId}/outcome`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ outcome }),
+          });
+          console.log(`[Pulse] Session outcome recorded: ${outcome}`);
+        } catch (e) {
+          console.warn('[Pulse] Failed to record outcome:', e);
+        }
+      }
+      promptEl.remove();
+      if (onComplete) onComplete();
+    });
+  });
 }
 
 export async function loadProviderStatus() {

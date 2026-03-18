@@ -563,6 +563,77 @@ class Database:
         );
         CREATE INDEX IF NOT EXISTS idx_style_guides_scope ON style_guides(scope);
 
+        -- Troubleshooting Facts: The living brain's knowledge base
+        CREATE TABLE IF NOT EXISTS troubleshooting_facts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symptom TEXT NOT NULL,
+            diagnosis TEXT,
+            resolution TEXT,
+            confidence REAL DEFAULT 0.5,
+            success_count INTEGER DEFAULT 0,
+            failure_count INTEGER DEFAULT 0,
+            activation_tier TEXT DEFAULT 'warm',
+            last_accessed DATETIME DEFAULT CURRENT_TIMESTAMP,
+            decay_score REAL DEFAULT 1.0,
+            hardware_context TEXT,
+            source TEXT DEFAULT 'session',
+            superseded_by INTEGER REFERENCES troubleshooting_facts(id),
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_facts_symptom ON troubleshooting_facts(symptom);
+        CREATE INDEX IF NOT EXISTS idx_facts_activation ON troubleshooting_facts(activation_tier);
+        CREATE INDEX IF NOT EXISTS idx_facts_confidence ON troubleshooting_facts(confidence DESC);
+
+        -- Fact Relations: Connections between facts
+        CREATE TABLE IF NOT EXISTS fact_relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_fact_id INTEGER NOT NULL,
+            target_fact_id INTEGER NOT NULL,
+            relation_type TEXT NOT NULL,
+            confidence REAL DEFAULT 0.5,
+            observation_count INTEGER DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (source_fact_id) REFERENCES troubleshooting_facts(id),
+            FOREIGN KEY (target_fact_id) REFERENCES troubleshooting_facts(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_relations_source ON fact_relations(source_fact_id);
+        CREATE INDEX IF NOT EXISTS idx_relations_target ON fact_relations(target_fact_id);
+
+        -- Session Outcomes: Tracks what worked and what didn't (training signal)
+        CREATE TABLE IF NOT EXISTS session_outcomes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            started_at DATETIME,
+            ended_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            symptoms_reported TEXT,
+            diagnostics_run TEXT,
+            diagnosis_reached TEXT,
+            resolution_applied TEXT,
+            outcome TEXT,
+            user_satisfaction INTEGER,
+            ai_provider_used TEXT,
+            facts_injected TEXT,
+            hardware_hash TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_outcomes_session ON session_outcomes(session_id);
+        CREATE INDEX IF NOT EXISTS idx_session_outcomes_outcome ON session_outcomes(outcome);
+
+        -- Knowledge Gaps: What the AI can't solve yet
+        CREATE TABLE IF NOT EXISTS knowledge_gaps (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symptom_description TEXT NOT NULL,
+            gap_type TEXT NOT NULL,
+            frequency INTEGER DEFAULT 1,
+            first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+            last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+            resolved_at DATETIME,
+            resolution_fact_id INTEGER REFERENCES troubleshooting_facts(id),
+            notes TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_gaps_type ON knowledge_gaps(gap_type);
+        CREATE INDEX IF NOT EXISTS idx_gaps_frequency ON knowledge_gaps(frequency DESC);
+
         -- Session Memory: Per-session key-value store for working memory
         CREATE TABLE IF NOT EXISTS session_memory (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1047,6 +1118,231 @@ class Database:
         """Get fixes currently in holding state."""
         cursor = self.execute(
             "SELECT * FROM suggested_fixes WHERE status = 'holding'"
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    # ========================================================================
+    # Living Brain — Troubleshooting Facts CRUD
+    # ========================================================================
+
+    def create_fact(self, symptom: str, diagnosis: str = None, resolution: str = None,
+                    confidence: float = 0.5, hardware_context: str = None,
+                    source: str = 'session') -> int:
+        """Create a new troubleshooting fact."""
+        cursor = self.execute(
+            """INSERT INTO troubleshooting_facts
+               (symptom, diagnosis, resolution, confidence, hardware_context, source)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (symptom, diagnosis, resolution, confidence, hardware_context, source)
+        )
+        self.commit()
+        return cursor.lastrowid
+
+    def get_fact(self, fact_id: int) -> Optional[Dict[str, Any]]:
+        """Get a fact by ID and update last_accessed."""
+        self.execute(
+            "UPDATE troubleshooting_facts SET last_accessed = CURRENT_TIMESTAMP WHERE id = ?",
+            (fact_id,)
+        )
+        self.commit()
+        cursor = self.execute("SELECT * FROM troubleshooting_facts WHERE id = ?", (fact_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_all_facts(self, activation_tier: str = None, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get facts, optionally filtered by activation tier."""
+        if activation_tier:
+            cursor = self.execute(
+                "SELECT * FROM troubleshooting_facts WHERE activation_tier = ? ORDER BY confidence DESC LIMIT ?",
+                (activation_tier, limit)
+            )
+        else:
+            cursor = self.execute(
+                "SELECT * FROM troubleshooting_facts ORDER BY confidence DESC LIMIT ?",
+                (limit,)
+            )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def update_fact_outcome(self, fact_id: int, success: bool):
+        """Update a fact's success/failure counts and recalculate confidence."""
+        col = 'success_count' if success else 'failure_count'
+        self.execute(
+            f"""UPDATE troubleshooting_facts
+                SET {col} = {col} + 1,
+                    confidence = CAST(success_count + (CASE WHEN ? THEN 1 ELSE 0 END) AS REAL) /
+                                 (success_count + failure_count + 1),
+                    last_accessed = CURRENT_TIMESTAMP,
+                    activation_tier = 'hot'
+                WHERE id = ?""",
+            (success, fact_id)
+        )
+        self.commit()
+
+    def update_fact_decay(self, fact_id: int, decay_score: float, tier: str):
+        """Update a fact's decay score and activation tier (used by nightly cron)."""
+        self.execute(
+            "UPDATE troubleshooting_facts SET decay_score = ?, activation_tier = ? WHERE id = ?",
+            (decay_score, tier, fact_id)
+        )
+        self.commit()
+
+    def search_facts_keyword(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Search facts by keyword matching on symptom, diagnosis, resolution."""
+        like = f"%{query}%"
+        cursor = self.execute(
+            """SELECT *, 1.0 as search_score FROM troubleshooting_facts
+               WHERE symptom LIKE ? OR diagnosis LIKE ? OR resolution LIKE ?
+               ORDER BY confidence DESC
+               LIMIT ?""",
+            (like, like, like, limit)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def supersede_fact(self, old_fact_id: int, new_fact_id: int):
+        """Mark a fact as superseded by a newer one."""
+        self.execute(
+            "UPDATE troubleshooting_facts SET superseded_by = ? WHERE id = ?",
+            (new_fact_id, old_fact_id)
+        )
+        self.commit()
+
+    # ========================================================================
+    # Living Brain — Fact Relations CRUD
+    # ========================================================================
+
+    def create_fact_relation(self, source_id: int, target_id: int,
+                             relation_type: str, confidence: float = 0.5) -> int:
+        """Create a relation between two facts."""
+        # Check if relation already exists
+        cursor = self.execute(
+            """SELECT id, observation_count FROM fact_relations
+               WHERE source_fact_id = ? AND target_fact_id = ? AND relation_type = ?""",
+            (source_id, target_id, relation_type)
+        )
+        existing = cursor.fetchone()
+        if existing:
+            # Increment observation count
+            self.execute(
+                "UPDATE fact_relations SET observation_count = observation_count + 1, confidence = ? WHERE id = ?",
+                (confidence, existing['id'])
+            )
+            self.commit()
+            return existing['id']
+
+        cursor = self.execute(
+            """INSERT INTO fact_relations (source_fact_id, target_fact_id, relation_type, confidence)
+               VALUES (?, ?, ?, ?)""",
+            (source_id, target_id, relation_type, confidence)
+        )
+        self.commit()
+        return cursor.lastrowid
+
+    def get_fact_relations(self, fact_id: int) -> List[Dict[str, Any]]:
+        """Get all relations for a fact (both directions)."""
+        cursor = self.execute(
+            """SELECT fr.*, tf.symptom, tf.diagnosis, tf.resolution, tf.confidence as fact_confidence
+               FROM fact_relations fr
+               JOIN troubleshooting_facts tf ON (
+                   CASE WHEN fr.source_fact_id = ? THEN fr.target_fact_id
+                        ELSE fr.source_fact_id END = tf.id
+               )
+               WHERE fr.source_fact_id = ? OR fr.target_fact_id = ?""",
+            (fact_id, fact_id, fact_id)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    # ========================================================================
+    # Living Brain — Session Outcomes CRUD
+    # ========================================================================
+
+    def create_session_outcome(self, session_id: str, outcome: str,
+                                symptoms: str = None, diagnosis: str = None,
+                                resolution: str = None, provider: str = None,
+                                facts_injected: str = None, hardware_hash: str = None,
+                                satisfaction: int = None) -> int:
+        """Record a session outcome."""
+        # Get session start time from session_memory
+        cursor = self.execute(
+            "SELECT MIN(created_at) as started FROM session_memory WHERE session_id = ?",
+            (session_id,)
+        )
+        row = cursor.fetchone()
+        started = row['started'] if row else None
+
+        cursor = self.execute(
+            """INSERT INTO session_outcomes
+               (session_id, started_at, symptoms_reported, diagnosis_reached,
+                resolution_applied, outcome, user_satisfaction, ai_provider_used,
+                facts_injected, hardware_hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (session_id, started, symptoms, diagnosis, resolution, outcome,
+             satisfaction, provider, facts_injected, hardware_hash)
+        )
+        self.commit()
+        return cursor.lastrowid
+
+    def get_session_outcomes(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get recent session outcomes."""
+        cursor = self.execute(
+            "SELECT * FROM session_outcomes ORDER BY created_at DESC LIMIT ?",
+            (limit,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_outcome_stats(self) -> Dict[str, Any]:
+        """Get aggregate outcome statistics."""
+        cursor = self.execute(
+            """SELECT outcome, COUNT(*) as count
+               FROM session_outcomes
+               GROUP BY outcome"""
+        )
+        stats = {row['outcome']: row['count'] for row in cursor.fetchall()}
+        total = sum(stats.values())
+        stats['total'] = total
+        if total > 0:
+            stats['resolution_rate'] = stats.get('resolved', 0) / total
+        return stats
+
+    # ========================================================================
+    # Living Brain — Knowledge Gaps CRUD
+    # ========================================================================
+
+    def create_or_update_gap(self, symptom: str, gap_type: str, notes: str = None) -> int:
+        """Create a knowledge gap or increment frequency if it exists."""
+        # Check for existing similar gap
+        cursor = self.execute(
+            "SELECT id, frequency FROM knowledge_gaps WHERE symptom_description = ? AND gap_type = ? AND resolved_at IS NULL",
+            (symptom, gap_type)
+        )
+        existing = cursor.fetchone()
+        if existing:
+            self.execute(
+                "UPDATE knowledge_gaps SET frequency = frequency + 1, last_seen = CURRENT_TIMESTAMP WHERE id = ?",
+                (existing['id'],)
+            )
+            self.commit()
+            return existing['id']
+
+        cursor = self.execute(
+            "INSERT INTO knowledge_gaps (symptom_description, gap_type, notes) VALUES (?, ?, ?)",
+            (symptom, gap_type, notes)
+        )
+        self.commit()
+        return cursor.lastrowid
+
+    def resolve_gap(self, gap_id: int, resolution_fact_id: int):
+        """Mark a knowledge gap as resolved."""
+        self.execute(
+            "UPDATE knowledge_gaps SET resolved_at = CURRENT_TIMESTAMP, resolution_fact_id = ? WHERE id = ?",
+            (resolution_fact_id, gap_id)
+        )
+        self.commit()
+
+    def get_open_gaps(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get unresolved knowledge gaps, ordered by frequency."""
+        cursor = self.execute(
+            "SELECT * FROM knowledge_gaps WHERE resolved_at IS NULL ORDER BY frequency DESC LIMIT ?",
+            (limit,)
         )
         return [dict(row) for row in cursor.fetchall()]
 

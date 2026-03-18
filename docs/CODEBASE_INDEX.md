@@ -5,7 +5,7 @@
 | File | Purpose | Status |
 |------|---------|--------|
 | `backend/app.py` | Flask server - blueprint registration, SSE endpoint, static serving, startup collection, scheduler | Active |
-| `backend/database.py` | SQLite schema (17 tables), models, CRUD operations, migrations, session memory CRUD | Active |
+| `backend/database.py` | SQLite schema (21 tables), models, CRUD operations, migrations, session memory + brain CRUD | Active |
 | `backend/collectors/base.py` | Base collector class (abstract) | Active |
 | `backend/collectors/hardware.py` | GPU, CPU, Memory, Motherboard, Storage, Network collectors (WMI + psutil) | Active |
 | `backend/collectors/monitors.py` | Monitor detection via EDID/WmiMonitorID | Active |
@@ -47,6 +47,7 @@
 | `backend/services/style_learning.py` | Style guide generation from user corrections | Active |
 | `backend/services/memory.py` | Session working memory - per-session key-value store, rule-based fact extraction, hardware anomaly detection, prompt building | Active |
 | `backend/services/web_search.py` | DuckDuckGo web search - hardware-aware query building, HTML parsing, prompt injection | Active |
+| `backend/services/brain.py` | Living brain service - fact CRUD, confidence scoring, outcome tracking, knowledge gaps, context assembly, nightly decay | Active |
 
 ## Frontend Files
 
@@ -130,6 +131,10 @@
 | `corrections` | User edits to AI output for style learning |
 | `style_guides` | Generated style guides from correction patterns |
 | `session_memory` | Per-session working memory key-value store |
+| `troubleshooting_facts` | Living brain knowledge base - symptom/diagnosis/resolution with confidence |
+| `fact_relations` | Connections between facts (causes, resolves, co-occurs, contradicts) |
+| `session_outcomes` | Full session outcome tracking (resolved/partial/unresolved) |
+| `knowledge_gaps` | What the AI can't solve yet - tracks uncertainty |
 
 ## Architecture
 
@@ -154,7 +159,8 @@ Flask Server (backend/app.py) — threaded
     |   |-- events — SSE broadcasting
     |   |-- style_learning — correction → style guide generation
     |   |-- memory — session working memory (H3-inspired scratch)
-    |   +-- web_search — DuckDuckGo search for current issue info
+    |   |-- web_search — DuckDuckGo search for current issue info
+    |   +-- brain — living brain (facts, outcomes, gaps, context assembly)
     |-- Collectors (read-only, parallel execution)
     |   |-- Hardware (GPU, CPU, Memory, Motherboard, Storage, Network)
     |   |-- Monitors (EDID via WmiMonitorID)
@@ -169,7 +175,7 @@ Flask Server (backend/app.py) — threaded
         |-- State machine (pending→approved→executed→holding→resolved)
         +-- Correction learning (3+ edits → style guide)
     |
-SQLite (data/system.db) - 17 tables
+SQLite (data/system.db) - 21 tables
 ```
 
 ## Key Technical Details

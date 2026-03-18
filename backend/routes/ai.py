@@ -34,6 +34,23 @@ def get_session(session_id):
     return jsonify({'session_id': session_id, 'memory': memory})
 
 
+@bp.route('/sessions/<session_id>/outcome', methods=['POST'])
+def session_outcome(session_id):
+    """Record how the session ended — feeds the living brain."""
+    try:
+        data = request.get_json() or {}
+        outcome = data.get('outcome', 'unresolved')  # resolved, partial, unresolved, wrong_diagnosis
+        satisfaction = data.get('satisfaction')  # 1-5 optional
+
+        from backend.services.brain import record_outcome
+        record_outcome(db, session_id, outcome, satisfaction)
+
+        return jsonify({'status': 'ok', 'outcome': outcome})
+    except Exception as e:
+        logger.error(f"Session outcome error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @bp.route('/sessions/<session_id>', methods=['DELETE'])
 def end_session(session_id):
     """End a session and clean up memory."""

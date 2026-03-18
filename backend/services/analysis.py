@@ -79,6 +79,16 @@ def run_analysis(db, description, screenshot_data=None, provider='auto', include
         except Exception as e:
             logger.warning(f"Could not inject session memory: {e}")
 
+    # Inject living brain context (learned facts, knowledge gaps)
+    try:
+        from backend.services.brain import build_brain_context
+        brain_context = build_brain_context(db, description, session_id)
+        if brain_context:
+            full_description = full_description + "\n\n" + brain_context
+            logger.info(f"Brain context injected ({len(brain_context)} chars)")
+    except Exception as e:
+        logger.warning(f"Could not inject brain context: {e}")
+
     # Collect fresh system data
     emit_analysis_progress('collecting', 'running', 'Scanning system...')
     collection = run_collection(
