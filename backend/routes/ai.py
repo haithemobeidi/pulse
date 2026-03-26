@@ -36,16 +36,23 @@ def get_session(session_id):
 
 @bp.route('/sessions/<session_id>/outcome', methods=['POST'])
 def session_outcome(session_id):
-    """Record how the session ended — feeds the living brain."""
+    """Record how the session ended — feeds the living brain and triggers metabolism."""
     try:
         data = request.get_json() or {}
         outcome = data.get('outcome', 'unresolved')  # resolved, partial, unresolved, wrong_diagnosis
         satisfaction = data.get('satisfaction')  # 1-5 optional
+        conversation = data.get('conversation', [])  # [{role, content}, ...] from frontend
 
         from backend.services.brain import record_outcome
         record_outcome(db, session_id, outcome, satisfaction)
 
-        return jsonify({'status': 'ok', 'outcome': outcome})
+        # Trigger metabolism — digest the session into brain facts (async, non-blocking)
+        if conversation and len(conversation) >= 2:
+            from backend.services.metabolism import digest_session_async
+            digest_session_async(db, session_id, outcome, conversation)
+            logger.info(f"Metabolism triggered for session {session_id} ({len(conversation)} messages)")
+
+        return jsonify({'status': 'ok', 'outcome': outcome, 'metabolism': len(conversation) >= 2})
     except Exception as e:
         logger.error(f"Session outcome error: {e}")
         return jsonify({'error': str(e)}), 500

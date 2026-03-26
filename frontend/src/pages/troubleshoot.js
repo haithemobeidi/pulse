@@ -540,12 +540,15 @@ async function recordOutcome(fixId, resolved, statusDiv) {
       body: JSON.stringify({ resolved, notes: '' }),
     });
 
-    // Also record session outcome so the brain learns
+    // Also record session outcome so the brain learns + metabolism digests the session
     if (currentSessionId) {
       await fetch(`${API_BASE}/api/ai/sessions/${currentSessionId}/outcome`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ outcome: resolved ? 'resolved' : 'unresolved' }),
+        body: JSON.stringify({
+          outcome: resolved ? 'resolved' : 'unresolved',
+          conversation: chatHistory,
+        }),
       });
     }
 
@@ -583,9 +586,9 @@ function promptForOutcome(sessionId, onComplete) {
           await fetch(`${API_BASE}/api/ai/sessions/${sessionId}/outcome`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ outcome }),
+            body: JSON.stringify({ outcome, conversation: chatHistory }),
           });
-          console.log(`[Pulse] Session outcome recorded: ${outcome}`);
+          console.log(`[Pulse] Session outcome recorded: ${outcome} (metabolism triggered)`);
         } catch (e) {
           console.warn('[Pulse] Failed to record outcome:', e);
         }

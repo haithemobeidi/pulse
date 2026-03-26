@@ -91,14 +91,21 @@ class OllamaProvider:
     """Local LLM via Ollama"""
 
     # Models to try in order of preference (best first)
+    # qwen3.5:35b = primary workhorse (MoE, multimodal, 256K ctx, ~194 tok/s)
+    # qwen3:32b = dense fallback for nuanced reasoning
+    # qwen3:30b-a3b = batch worker / metabolism (MoE, ~100 tok/s)
+    # llama3.3:70b = heavy scripting (requires CPU offload)
     PREFERRED_MODELS = [
-        "qwen2.5:32b",
-        "qwen2.5:14b",
+        "qwen3.5:35b",
+        "qwen3:32b",
+        "qwen3:30b-a3b",
         "llama3.3:70b",
         "llama3.1:8b",
         "mistral:7b",
-        "gemma2:9b",
     ]
+
+    # Specific model for batch/extraction tasks (fast, cheap)
+    BATCH_MODEL = "qwen3:30b-a3b"
 
     @staticmethod
     def is_available() -> bool:

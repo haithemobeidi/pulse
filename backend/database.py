@@ -864,13 +864,18 @@ class Database:
         return [dict(row) for row in cursor.fetchall()]
 
     def get_recent_reliability_records(self, days: int = 30, limit: int = 100) -> List[Dict[str, Any]]:
-        """Get recent reliability records across all snapshots"""
+        """Get recent reliability records across all snapshots, deduplicated.
+        Each collection run re-inserts the same Windows reliability events,
+        so we group by event_time + source + message to avoid duplicates."""
         cursor = self.execute(
             """
-            SELECT r.*, s.timestamp as snapshot_time
+            SELECT MIN(r.id) as id, r.snapshot_id, r.record_type, r.source_name,
+                   r.event_message, r.event_time, r.product_name, r.stability_index,
+                   MAX(s.timestamp) as snapshot_time
             FROM reliability_records r
             JOIN snapshots s ON r.snapshot_id = s.id
             WHERE r.event_time >= datetime('now', ?)
+            GROUP BY r.event_time, r.source_name, r.event_message
             ORDER BY r.event_time DESC
             LIMIT ?
             """,

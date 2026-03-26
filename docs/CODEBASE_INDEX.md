@@ -48,6 +48,7 @@
 | `backend/services/memory.py` | Session working memory - per-session key-value store, rule-based fact extraction, hardware anomaly detection, prompt building | Active |
 | `backend/services/web_search.py` | DuckDuckGo web search - hardware-aware query building, HTML parsing, prompt injection | Active |
 | `backend/services/brain.py` | Living brain service - fact CRUD, confidence scoring, outcome tracking, knowledge gaps, context assembly, nightly decay | Active |
+| `backend/services/metabolism.py` | Phase 2C metabolism - auto-extracts structured facts from completed sessions using Ollama (qwen3:30b-a3b batch worker), stores in brain with deduplication | Active |
 
 ## Frontend Files
 
@@ -103,6 +104,8 @@
 | `docs/MASTER_HANDOFF_INDEX.md` | Session handoff history |
 | `docs/handoffs/` | Individual session handoff documents |
 | `docs/FUTURE_FEATURES.md` | Roadmap for future features |
+| `docs/LLM_MODEL_RESEARCH.md` | Multi-model architecture research - model profiles, routing table, coordination patterns, cost projections |
+| `docs/MULTI_AGENT_PLAN.md` | Multi-agent intelligence plan (5 phases: Memory, Living Brain, Routing, Builder, Nightly) |
 | `README.md` | Project overview |
 
 ## Database
@@ -198,4 +201,4 @@ SQLite (data/system.db) - 21 tables
 | `docs/MULTI_AGENT_PLAN.md` | Multi-agent intelligence plan (4 phases: Memory, Routing, Builder Agent, Resolution Paths) |
 
 ## Last Updated
-2026-03-17
+2026-03-25

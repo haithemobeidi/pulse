@@ -4,6 +4,7 @@
 
 | Date | Focus | Accomplishments | Status | Next Priority |
 |------|-------|-----------------|--------|----------------|
+| 03-25-2026 (EVE) | Phase 2C Metabolism + LLM Model Research | Metabolism service (auto-extract facts from sessions via qwen3:30b-a3b), LLM research doc (7 models, tiered routing), model roster update (qwen3.5:35b primary, retired qwen2.5), Timeline dedup fix | Phase 2C complete, models updated | Phase 2D Hybrid Search (FTS5 + vector) |
 | 03-18-2026 (LATE) | Phase 2A-2B: Living Brain + Outcome Tracking | 4 brain tables (facts, relations, outcomes, gaps), brain service with confidence scoring + decay + context assembly, fix outcomes feed brain, New Chat outcome prompt, brain context injected into AI prompts | Phase 2A-2B complete | Phase 2C Metabolism (auto-extract facts) |
 | 03-17-2026 (EVE2) | OpenClaw Research + Plan Rewrite | Deep-dived OpenClaw architecture, identified adoptable patterns (outcome-tracked facts, metabolism, hybrid search, knowledge gaps, activation decay), rewrote plan as 5 phases with Living Brain as Phase 2 | Phase 1 complete, Phase 2 planned | Phase 2A Troubleshooting Facts DB |
 | 03-17-2026 (EVE) | Multi-Agent Plan + Phase 1 (Memory + Web Search) | 4-phase multi-agent plan, session working memory (SQLite + extraction + prompt injection), DuckDuckGo web search (hardware-aware queries), stop button, architecture audit | Phase 1 core complete | OpenClaw research, plan revision |
